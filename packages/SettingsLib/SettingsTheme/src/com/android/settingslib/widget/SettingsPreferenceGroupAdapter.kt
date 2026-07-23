@@ -56,6 +56,13 @@ open class SettingsPreferenceGroupAdapter(preferenceGroup: PreferenceGroup) :
     private var mGroupPaddingEnd = 0
     @DrawableRes private var mLegacyBackgroundRes: Int
 
+    // Glass UI: draw category cards translucent when Settings.System.glass_ui is on.
+    // Off by default. Settings has no blur behind it, so this is a translucent/glossy
+    // card (pairs with a wallpaper-blur window for full frost later).
+    private val glassUi: Boolean =
+        android.provider.Settings.System.getInt(
+            preferenceGroup.context.contentResolver, "glass_ui", 0) != 0
+
     private val mHandler = Handler(Looper.getMainLooper())
 
     private val syncRunnable = Runnable { updatePreferencesList() }
@@ -223,6 +230,8 @@ open class SettingsPreferenceGroupAdapter(preferenceGroup: PreferenceGroup) :
                     backgroundPadding.right,
                     backgroundPadding.bottom,
                 )
+                // Glass UI: translucent card fill (card content stays fully opaque).
+                background.mutate().alpha = if (glassUi) 0xC0 else 0xFF
             }
             val iconFrame =
                 holder.findViewById(androidx.preference.R.id.icon_frame)
