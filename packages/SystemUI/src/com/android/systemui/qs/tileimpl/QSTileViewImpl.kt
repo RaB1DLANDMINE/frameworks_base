@@ -21,6 +21,11 @@ import android.animation.PropertyValuesHolder
 import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.content.Context
+import android.database.ContentObserver
+import android.os.Handler
+import android.os.Looper
+import android.os.UserHandle
+import android.provider.Settings
 import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.content.res.Resources.ID_NULL
@@ -84,6 +89,9 @@ constructor(
 
     companion object {
         private const val INVALID = -1
+        // Glass UI: Settings.System key + translucency applied to tile fills when enabled.
+        private const val GLASS_UI_SETTING = "glass_ui"
+        private const val GLASS_UI_TILE_ALPHA = 0x99 // ~60%, lets the blurred shade show through
         private const val BACKGROUND_NAME = "background"
         private const val LABEL_NAME = "label"
         private const val SECONDARY_LABEL_NAME = "secondaryLabel"
@@ -165,6 +173,24 @@ constructor(
 
     private var backgroundColor: Int = 0
     private var backgroundOverlayColor: Int = 0
+
+    // Glass UI: when Settings.System.glass_ui is on, draw tile fills translucent so the
+    // blurred shade shows through (frosted glass). Off by default; observed live.
+    private var glassUiEnabled: Boolean = readGlassUi()
+    private val glassUiObserver =
+        object : ContentObserver(Handler(Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) {
+                val enabled = readGlassUi()
+                if (enabled != glassUiEnabled) {
+                    glassUiEnabled = enabled
+                    setColor(backgroundColor)
+                }
+            }
+        }
+
+    private fun readGlassUi(): Boolean =
+        Settings.System.getIntForUser(
+            context.contentResolver, GLASS_UI_SETTING, 0, UserHandle.USER_CURRENT) != 0
 
     private val singleAnimator: ValueAnimator =
         ValueAnimator().apply {
@@ -817,8 +843,27 @@ constructor(
     }
 
     private fun setColor(color: Int) {
-        backgroundBaseDrawable.mutate().setTint(color)
+        val tint =
+            if (glassUiEnabled) (color and 0x00FFFFFF) or (GLASS_UI_TILE_ALPHA shl 24) else color
+        backgroundBaseDrawable.mutate().setTint(tint)
         backgroundColor = color
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        context.contentResolver.registerContentObserver(
+            Settings.System.getUriFor(GLASS_UI_SETTING), false, glassUiObserver,
+            UserHandle.USER_ALL)
+        val enabled = readGlassUi()
+        if (enabled != glassUiEnabled) {
+            glassUiEnabled = enabled
+            setColor(backgroundColor)
+        }
+    }
+
+    override fun onDetachedFromWindow() {
+        context.contentResolver.unregisterContentObserver(glassUiObserver)
+        super.onDetachedFromWindow()
     }
 
     private fun setLabelColor(color: Int) {
