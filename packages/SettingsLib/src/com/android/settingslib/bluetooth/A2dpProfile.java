@@ -31,7 +31,6 @@ import android.bluetooth.BluetoothUuid;
 import android.content.Context;
 import android.os.Build;
 import android.os.ParcelUuid;
-import android.provider.Settings;
 import android.util.Log;
 
 import androidx.annotation.RequiresApi;
@@ -297,92 +296,6 @@ public class A2dpProfile implements LocalBluetoothProfile {
         } else {
             mService.disableOptionalCodecs(bluetoothDevice);
         }
-    }
-
-    /**
-     * Devices that should always prefer the LDAC codec, as a comma-separated
-     * address list. Shared with the Bluetooth stack, which re-applies the
-     * preference whenever the codec configuration changes.
-     */
-    private static final String LDAC_DEVICES_SETTING = "bluetooth_a2dp_ldac_devices";
-
-    /** LDAC codec-specific-1 value for adaptive bit rate. */
-    private static final long LDAC_QUALITY_ABR = 1003;
-
-    /** @return whether LDAC is among the device's selectable A2DP codecs */
-    public boolean supportsLdacAudio(BluetoothDevice device) {
-        BluetoothDevice bluetoothDevice = (device != null) ? device : getActiveDevice();
-        if (mService == null || bluetoothDevice == null) {
-            return false;
-        }
-        BluetoothCodecStatus codecStatus = mService.getCodecStatus(bluetoothDevice);
-        if (codecStatus == null) {
-            return false;
-        }
-        for (BluetoothCodecConfig config : codecStatus.getCodecsSelectableCapabilities()) {
-            if (config.getCodecType() == BluetoothCodecConfig.SOURCE_CODEC_TYPE_LDAC) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /** @return whether this device is set to always prefer LDAC */
-    public boolean isLdacAudioEnabled(BluetoothDevice device) {
-        BluetoothDevice bluetoothDevice = (device != null) ? device : getActiveDevice();
-        if (bluetoothDevice == null) {
-            return false;
-        }
-        String devices = Settings.Global.getString(
-                mContext.getContentResolver(), LDAC_DEVICES_SETTING);
-        if (devices == null) {
-            return false;
-        }
-        for (String address : devices.split(",")) {
-            if (address.equalsIgnoreCase(bluetoothDevice.getAddress())) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /** Persists the per-device LDAC preference and applies it if connected. */
-    public void setLdacAudioEnabled(BluetoothDevice device, boolean enabled) {
-        BluetoothDevice bluetoothDevice = (device != null) ? device : getActiveDevice();
-        if (bluetoothDevice == null) {
-            return;
-        }
-        List<String> addresses = new ArrayList<>();
-        String devices = Settings.Global.getString(
-                mContext.getContentResolver(), LDAC_DEVICES_SETTING);
-        if (devices != null) {
-            for (String address : devices.split(",")) {
-                if (!address.isEmpty()
-                        && !address.equalsIgnoreCase(bluetoothDevice.getAddress())) {
-                    addresses.add(address);
-                }
-            }
-        }
-        if (enabled) {
-            addresses.add(bluetoothDevice.getAddress());
-        }
-        Settings.Global.putString(mContext.getContentResolver(), LDAC_DEVICES_SETTING,
-                String.join(",", addresses));
-
-        if (mService == null
-                || getConnectionStatus(bluetoothDevice) != BluetoothProfile.STATE_CONNECTED) {
-            return;
-        }
-        // Apply immediately: raise LDAC to the highest priority, or reset its
-        // priority so the stack re-runs its default codec selection.
-        BluetoothCodecConfig codecConfig = new BluetoothCodecConfig.Builder()
-                .setCodecType(BluetoothCodecConfig.SOURCE_CODEC_TYPE_LDAC)
-                .setCodecPriority(enabled
-                        ? BluetoothCodecConfig.CODEC_PRIORITY_HIGHEST
-                        : BluetoothCodecConfig.CODEC_PRIORITY_DEFAULT)
-                .setCodecSpecific1(LDAC_QUALITY_ABR)
-                .build();
-        mService.setCodecConfigPreference(bluetoothDevice, codecConfig);
     }
 
     /**
