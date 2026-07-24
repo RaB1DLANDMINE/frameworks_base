@@ -151,10 +151,16 @@ constructor(
         val status = intent.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
         val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, 0)
         val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, 100)
-        
+        val plugged = intent.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0)
+
         val wasChargingBefore = isCharging
-        isCharging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
-                     status == BatteryManager.BATTERY_STATUS_FULL
+        // Gate on the actual plugged flag: the OEM health HAL keeps reporting
+        // BATTERY_STATUS_FULL for a while after unplugging a full battery, which
+        // would otherwise flip isCharging back to true right after
+        // ACTION_POWER_DISCONNECTED and leave the animation stuck on.
+        isCharging = plugged != 0 &&
+                     (status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                      status == BatteryManager.BATTERY_STATUS_FULL)
         
         batteryLevel = (level * 100 / scale).coerceIn(0, 100)
         chargingView.batteryLevel = batteryLevel
