@@ -4605,7 +4605,7 @@
      gesture navigation overlay package, in order to create 3 different sizes which are selectable
      via a slider component. -->
     <array name="config_backGestureInsetScales">
-        <item>0.60</item>
+        <item>0.75</item>
         <item>1.00</item>
         <item>1.33</item>
     </array>
