@@ -1886,6 +1886,7 @@ public class PhoneWindowManager implements WindowManagerPolicy {
                     KeyEvent.KEYCODE_ASSIST, 0, 0, KeyCharacterMap.VIRTUAL_KEYBOARD, 0,
                     KeyEvent.FLAG_FROM_SYSTEM, InputDevice.SOURCE_KEYBOARD);
 
+            performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY, "Assist - Press");
             performKeyAction(mAssistPressAction, event,
                     AssistUtils.INVOCATION_TYPE_ASSIST_BUTTON);
         }
@@ -2384,6 +2385,28 @@ public class PhoneWindowManager implements WindowManagerPolicy {
         mContext.sendBroadcast(intent, android.Manifest.permission.STATUS_BAR_SERVICE);
     }
 
+    private String resolveCameraPackage() {
+        final Intent intent = new Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA);
+        final ResolveInfo info = mPackageManager.resolveActivityAsUser(intent,
+                PackageManager.MATCH_DEFAULT_ONLY, mCurrentUserId);
+        if (info != null && info.activityInfo != null) {
+            return info.activityInfo.packageName;
+        }
+        return null;
+    }
+
+    private void launchOrShutterCameraAction() {
+        final String cameraPackage = resolveCameraPackage();
+        final String foregroundPackage = ActionUtils.getRunningActivityPackage(mContext);
+        if (cameraPackage != null && cameraPackage.equals(foregroundPackage)) {
+            // Already in the camera app: act as the shutter button.
+            triggerVirtualKeypress(KeyEvent.KEYCODE_CAMERA);
+        } else {
+            // Not in the camera app: launch it.
+            launchCameraAction();
+        }
+    }
+
     private void triggerVirtualKeypress(final int keyCode) {
         long now = SystemClock.uptimeMillis();
         final KeyEvent downEvent = new KeyEvent(now, now, KeyEvent.ACTION_DOWN,
@@ -2424,6 +2447,9 @@ public class PhoneWindowManager implements WindowManagerPolicy {
                 break;
             case LAUNCH_CAMERA:
                 launchCameraAction();
+                break;
+            case CAMERA_SHUTTER:
+                launchOrShutterCameraAction();
                 break;
             case SLEEP:
                 mPowerManager.goToSleep(SystemClock.uptimeMillis());
