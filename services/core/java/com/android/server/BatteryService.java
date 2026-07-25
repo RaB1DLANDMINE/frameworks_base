@@ -558,8 +558,30 @@ public final class BatteryService extends SystemService {
 
             // Update light state now that mLineageBatteryLights has been initialized.
             updateLedPulse();
+
+            // Shorten the effective health poll: force a fresh HAL re-read on a short interval so
+            // a missed USB/charger disconnect uevent self-corrects quickly (the vendor healthd
+            // poll is ~60s). Uses postDelayed (uptime clock) so it never wakes the device during
+            // sleep - it only re-polls while awake, which is when unplug happens.
+            mHandler.postDelayed(mPeriodicHealthRepoll, HEALTH_REPOLL_INTERVAL_MS);
         }
     }
+
+    private static final long HEALTH_REPOLL_INTERVAL_MS = 30_000L;
+
+    private final Runnable mPeriodicHealthRepoll = new Runnable() {
+        @Override
+        public void run() {
+            try {
+                if (mHealthServiceWrapper != null) {
+                    mHealthServiceWrapper.scheduleUpdate();
+                }
+            } catch (Exception e) {
+                // best-effort; never let a re-poll failure disturb the service
+            }
+            mHandler.postDelayed(this, HEALTH_REPOLL_INTERVAL_MS);
+        }
+    };
 
     private void registerHealthCallback() {
         traceBegin("HealthInitWrapper");
@@ -818,7 +840,13 @@ public final class BatteryService extends SystemService {
         shutdownIfNoPowerLocked();
         shutdownIfOverTempLocked();
 
-        mOemCharger = mHasOemCharger && isOemCharger();
+        // Gate the OEM fast-charge flag on the real plug state. The OnePlus fast_charge/
+        // voocchg_ing sysfs nodes can linger at "1" for a while after unplug, so reading them
+        // alone left the charging indicator "stuck on". mPlugType comes from the health HAL and
+        // clears immediately on unplug, so anchoring to it makes the flag follow reality.
+        mOemCharger = mHasOemCharger
+                && mPlugType != BATTERY_PLUGGED_NONE
+                && isOemCharger();
 
         if (force || mHealthInfo.chargingPolicy != mLastChargingPolicy) {
             mLastChargingPolicy = mHealthInfo.chargingPolicy;
