@@ -22,6 +22,7 @@ import com.android.systemui.LatencyTester
 import com.android.systemui.SliceBroadcastRelayHandler
 import com.android.systemui.accessibility.Magnification
 import com.android.systemui.applocker.AxAppLockerHelper
+import com.android.systemui.theme.AlbumArtAccentController
 import com.android.systemui.ax.AxPlatformServiceImpl
 import com.android.systemui.axdynamicbar.domain.AxDynamicBarChipsRefiner
 import com.android.systemui.axdynamicbar.ui.AxDynamicBarManager
@@ -101,6 +102,12 @@ abstract class SystemUICoreStartableModule {
     @IntoMap
     @ClassKey(GlobalActionsComponent::class)
     abstract fun bindGlobalActionsComponent(sysui: GlobalActionsComponent): CoreStartable
+
+    /** Inject into AlbumArtAccentController (dynamic accent from now-playing album art). */
+    @Binds
+    @IntoMap
+    @ClassKey(AlbumArtAccentController::class)
+    abstract fun bindAlbumArtAccentController(sysui: AlbumArtAccentController): CoreStartable
 
     /** Inject into InstantAppNotifier. */
     @Binds

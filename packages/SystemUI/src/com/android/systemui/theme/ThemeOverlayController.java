@@ -159,6 +159,10 @@ public class ThemeOverlayController implements CoreStartable, Dumpable {
     private boolean mNeedsOverlayCreation;
     // Dominant color extracted from wallpaper, NOT the color used on the overlay
     protected int mMainWallpaperColor = Color.TRANSPARENT;
+    // Album-art dynamic accent: when non-null, this seed color overrides the wallpaper/preset
+    // palette while music is playing. Null means the feature is inactive (normal theming).
+    // Driven by AlbumArtAccentController. Wins over wallpaper AND any manual/preset accent.
+    private Integer mMediaSeedColor = null;
     // UI contrast as reported by UiModeManager
     private double mContrast = 0.0;
     // Theme variant: Vibrant, Tonal, Expressive, etc
@@ -663,7 +667,10 @@ public class ThemeOverlayController implements CoreStartable, Dumpable {
     private void reevaluateSystemTheme(boolean forceReload) {
         final WallpaperColors currentColors = mCurrentColors.get(mUserTracker.getUserId());
         final int mainColor;
-        if (currentColors == null) {
+        if (mMediaSeedColor != null) {
+            // Album-art dynamic accent is active: force the seed to the album color.
+            mainColor = mMediaSeedColor.intValue();
+        } else if (currentColors == null) {
             mainColor = Color.TRANSPARENT;
         } else {
             mainColor = getNeutralColor(currentColors);
@@ -696,6 +703,38 @@ public class ThemeOverlayController implements CoreStartable, Dumpable {
 
     protected int getAccentColor(@NonNull WallpaperColors wallpaperColors) {
         return ColorScheme.getSeedColor(wallpaperColors);
+    }
+
+    /**
+     * Override the whole-system accent with a seed color extracted from the now-playing track's
+     * album art. While active this wins over the wallpaper color and over any manually-picked or
+     * preset accent. Call {@link #clearMediaAccentColors()} to restore normal theming.
+     *
+     * <p>Safe to call from any thread; the re-theme is posted to the main executor.
+     */
+    public void setMediaAccentColors(@NonNull WallpaperColors mediaColors) {
+        final int seed = getNeutralColor(mediaColors);
+        mMainExecutor.execute(() -> {
+            if (mMediaSeedColor != null && mMediaSeedColor.intValue() == seed) {
+                // Same album color already applied - skip the (expensive) re-theme.
+                return;
+            }
+            if (DEBUG) Log.d(TAG, "Applying album-art accent seed: " + Integer.toHexString(seed));
+            mMediaSeedColor = Integer.valueOf(seed);
+            reevaluateSystemTheme(true /* forceReload */);
+        });
+    }
+
+    /** Restore normal wallpaper/preset theming after album-art accent was active. No-op if off. */
+    public void clearMediaAccentColors() {
+        mMainExecutor.execute(() -> {
+            if (mMediaSeedColor == null) {
+                return;
+            }
+            if (DEBUG) Log.d(TAG, "Clearing album-art accent, restoring normal theme");
+            mMediaSeedColor = null;
+            reevaluateSystemTheme(true /* forceReload */);
+        });
     }
 
     @VisibleForTesting
@@ -829,9 +868,20 @@ public class ThemeOverlayController implements CoreStartable, Dumpable {
             }
         }
 
+        // Album-art dynamic accent overrides any manually-picked/preset palette while active.
+        // Drop the JSON palette entries so the fabricated media overlays (built from the album
+        // seed in createOverlays) are the ones injected via the fallbacks below.
+        final boolean mediaAccentActive = mMediaSeedColor != null;
+        if (mediaAccentActive) {
+            categoryToPackage.remove(OVERLAY_CATEGORY_SYSTEM_PALETTE);
+            categoryToPackage.remove(OVERLAY_CATEGORY_ACCENT_COLOR);
+            categoryToPackage.remove(OVERLAY_CATEGORY_DYNAMIC_COLOR);
+        }
+
         // Let's generate system overlay if the style picker decided to override it.
         OverlayIdentifier systemPalette = categoryToPackage.get(OVERLAY_CATEGORY_SYSTEM_PALETTE);
-        if (mIsMonetEnabled && systemPalette != null && systemPalette.getPackageName() != null) {
+        if (!mediaAccentActive && mIsMonetEnabled && systemPalette != null
+                && systemPalette.getPackageName() != null) {
             try {
                 String colorString = systemPalette.getPackageName().toLowerCase();
                 if (!colorString.startsWith("#")) {
