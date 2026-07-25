@@ -717,9 +717,16 @@ bool BootAnimation::findBootAnimationFileInternal(const std::vector<std::string>
 void BootAnimation::findBootAnimationFile() {
     ATRACE_CALL();
     const bool playDarkAnim = android::base::GetIntProperty("ro.boot.theme", 0) == 1;
+    // Infinity: allow a runtime-selectable boot animation. When
+    // persist.sys.bootanim.file is set (e.g. by InfinitySuite) it names a zip
+    // inside /product/media; when empty we fall back to the AOSP default so the
+    // stock /system/media/bootanimation.zip is used.
+    std::string userBootanimationFile =
+        android::base::GetProperty("persist.sys.bootanim.file", "");
     const std::string productBootanimationFile = PRODUCT_BOOTANIMATION_DIR +
-        android::base::GetProperty("ro.product.bootanim.file", playDarkAnim ?
-        PRODUCT_BOOTANIMATION_DARK_FILE : PRODUCT_BOOTANIMATION_FILE);
+        (!userBootanimationFile.empty() ? userBootanimationFile :
+            android::base::GetProperty("ro.product.bootanim.file", playDarkAnim ?
+            PRODUCT_BOOTANIMATION_DARK_FILE : PRODUCT_BOOTANIMATION_FILE));
     static const std::vector<std::string> bootFiles = {
         APEX_BOOTANIMATION_FILE, productBootanimationFile,
         OEM_BOOTANIMATION_FILE, SYSTEM_BOOTANIMATION_FILE
