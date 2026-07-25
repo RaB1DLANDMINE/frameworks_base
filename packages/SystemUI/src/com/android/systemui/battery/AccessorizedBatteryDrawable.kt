@@ -198,6 +198,11 @@ class AccessorizedBatteryDrawable(
         return mainBatteryDrawable.powerSaveEnabled
     }
 
+    /** Sets (or clears, with 0) a runtime charging-fill color override (e.g. SuperVOOC rainbow). */
+    fun setChargingColorOverride(color: Int) {
+        mainBatteryDrawable.setChargingColorOverride(color)
+    }
+
     /** Sets the colors to use for the icon. */
     fun setColors(fgColor: Int, bgColor: Int, singleToneColor: Int) {
         shieldPaint.color = if (dualTone) fgColor else singleToneColor

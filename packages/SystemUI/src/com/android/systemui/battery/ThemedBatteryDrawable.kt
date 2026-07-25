@@ -153,6 +153,22 @@ open class ThemedBatteryDrawable(private val context: Context, frameColor: Int) 
     private val levelCornerRadii = FloatArray(8)
     private var chargingFillColorOverride: Int = 0
     private var powerSaveFillColorOverride: Int = 0
+    // Runtime charging-fill color (e.g. animated rainbow for SuperVOOC). When its alpha is
+    // non-zero it wins over the static resource-based chargingFillColorOverride; setting it to 0
+    // clears it and falls back to the normal charging color.
+    private var chargingColorRuntimeOverride: Int = 0
+
+    /** Effective charging-fill color: runtime override if set, else the resource default. */
+    private val effectiveChargingColorOverride: Int
+        get() = if ((chargingColorRuntimeOverride ushr 24) != 0) chargingColorRuntimeOverride
+                else chargingFillColorOverride
+
+    /** Set (or clear, with 0) a runtime charging-fill color override. */
+    fun setChargingColorOverride(color: Int) {
+        if (color == chargingColorRuntimeOverride) return
+        chargingColorRuntimeOverride = color
+        invalidateSelf()
+    }
     private var textStyleMode: Int = TEXT_STYLE_TWO_TONE_CENTERED
     private var boltKnockout: Boolean = false
     private var textSizeOverride: Int = 0
@@ -298,7 +314,7 @@ open class ThemedBatteryDrawable(private val context: Context, frameColor: Int) 
             c.drawPath(unifiedPath, fillPaint)
             fillPaint.color = levelColor
 
-            if ((charging && (chargingFillColorOverride ushr 24) != 0) ||
+            if ((charging && (effectiveChargingColorOverride ushr 24) != 0) ||
                     (powerSaveEnabled && (powerSaveFillColorOverride ushr 24) != 0) ||
                     (batteryLevel <= criticalLevel && !charging)) {
                 c.save()
@@ -443,7 +459,8 @@ open class ThemedBatteryDrawable(private val context: Context, frameColor: Int) 
 
     private fun batteryColorForLevel(level: Int): Int {
         return when {
-            charging && (chargingFillColorOverride ushr 24) != 0 -> chargingFillColorOverride
+            charging && (effectiveChargingColorOverride ushr 24) != 0 ->
+                    effectiveChargingColorOverride
             powerSaveEnabled && (powerSaveFillColorOverride ushr 24) != 0 ->
                     powerSaveFillColorOverride
             charging || powerSaveEnabled -> fillColor

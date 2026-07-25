@@ -23,16 +23,24 @@ import static java.lang.annotation.RetentionPolicy.SOURCE;
 
 import android.animation.LayoutTransition;
 import android.animation.ObjectAnimator;
+import android.animation.ValueAnimator;
 import android.annotation.IntDef;
 import android.annotation.IntRange;
 import android.annotation.Nullable;
 import android.annotation.SuppressLint;
+import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.content.res.TypedArray;
+import android.database.ContentObserver;
+import android.graphics.Color;
 import android.graphics.Rect;
 import android.graphics.drawable.Drawable;
+import android.os.BatteryManager;
+import android.os.Handler;
 import android.os.UserHandle;
 import android.provider.Settings;
 import android.text.TextUtils;
@@ -48,6 +56,7 @@ import androidx.annotation.StyleRes;
 import androidx.annotation.VisibleForTesting;
 
 import com.android.app.animation.Interpolators;
+import com.android.settingslib.Utils;
 import com.android.systemui.DualToneHandler;
 import com.android.systemui.battery.unified.BatteryColors;
 import com.android.systemui.battery.unified.BatteryDrawableState;
@@ -95,6 +104,22 @@ public class BatteryMeterView extends LinearLayout implements DarkReceiver {
 
     private DualToneHandler mDualToneHandler;
     private boolean mIsStaticColor = false;
+
+    // ---- SuperVOOC charging-icon color effect ----
+    // Settings.System style key (InfinitySuite): 0 = off, 1 = rainbow (animated), 2 = static accent.
+    public static final String SUPERVOOC_CHARGING_ICON_STYLE = "supervooc_charging_icon_style";
+    private static final int CHARGE_STYLE_OFF = 0;
+    private static final int CHARGE_STYLE_RAINBOW = 1;
+    private static final int CHARGE_STYLE_STATIC = 2;
+    // Only treat charging as SuperVOOC above this wattage (normal PD tops out well below this).
+    private static final int SUPERVOOC_WATT_THRESHOLD = 45;
+    private static final long RAINBOW_CYCLE_MS = 4000L;
+    private int mChargingIconStyle = CHARGE_STYLE_RAINBOW; // default: rainbow
+    private boolean mIsSuperVooc = false;
+    private ValueAnimator mRainbowAnimator;
+    private final float[] mRainbowHsv = new float[]{0f, 1f, 1f};
+    private BroadcastReceiver mChargePowerReceiver;
+    private ContentObserver mChargingStyleObserver;
 
     private BatteryEstimateFetcher mBatteryEstimateFetcher;
 
@@ -242,6 +267,7 @@ public class BatteryMeterView extends LinearLayout implements DarkReceiver {
         mDrawable.setCharging(isCharging);
         mDrawable.setBatteryLevel(level);
         updatePercentText();
+        updateChargingColorEffect();
 
         if (NewStatusBarIcons.isEnabled()) {
             Drawable attr = mUnifiedBatteryState.getAttribution();
@@ -759,6 +785,108 @@ public class BatteryMeterView extends LinearLayout implements DarkReceiver {
     @VisibleForTesting
     boolean isCharging() {
         return mPluggedIn && !mIsIncompatibleCharging;
+    }
+
+    @Override
+    protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        // Read the user's style choice and watch it for live changes.
+        mChargingIconStyle = Settings.System.getIntForUser(getContext().getContentResolver(),
+                SUPERVOOC_CHARGING_ICON_STYLE, CHARGE_STYLE_RAINBOW, UserHandle.USER_CURRENT);
+        if (mChargingStyleObserver == null) {
+            mChargingStyleObserver = new ContentObserver(new Handler(getContext().getMainLooper())) {
+                @Override
+                public void onChange(boolean selfChange) {
+                    mChargingIconStyle = Settings.System.getIntForUser(
+                            getContext().getContentResolver(), SUPERVOOC_CHARGING_ICON_STYLE,
+                            CHARGE_STYLE_RAINBOW, UserHandle.USER_CURRENT);
+                    updateChargingColorEffect();
+                }
+            };
+        }
+        getContext().getContentResolver().registerContentObserver(
+                Settings.System.getUriFor(SUPERVOOC_CHARGING_ICON_STYLE),
+                false, mChargingStyleObserver, UserHandle.USER_ALL);
+        // Sticky ACTION_BATTERY_CHANGED gives us charging current/voltage to derive wattage.
+        if (mChargePowerReceiver == null) {
+            mChargePowerReceiver = new BroadcastReceiver() {
+                @Override
+                public void onReceive(Context context, Intent intent) {
+                    updateSuperVoocFromIntent(intent);
+                }
+            };
+        }
+        Intent sticky = getContext().registerReceiver(mChargePowerReceiver,
+                new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+        updateSuperVoocFromIntent(sticky);
+    }
+
+    @Override
+    protected void onDetachedFromWindow() {
+        super.onDetachedFromWindow();
+        if (mChargePowerReceiver != null) {
+            getContext().unregisterReceiver(mChargePowerReceiver);
+        }
+        if (mChargingStyleObserver != null) {
+            getContext().getContentResolver().unregisterContentObserver(mChargingStyleObserver);
+        }
+        stopRainbow();
+        mDrawable.setChargingColorOverride(0);
+    }
+
+    /** Derive charging wattage from the battery intent to flag SuperVOOC-class charging. */
+    private void updateSuperVoocFromIntent(@Nullable Intent intent) {
+        boolean superVooc = false;
+        if (intent != null) {
+            // EXTRA_MAX_CHARGING_CURRENT is in microamps, EXTRA_MAX_CHARGING_VOLTAGE in microvolts.
+            int currentUa = intent.getIntExtra(BatteryManager.EXTRA_MAX_CHARGING_CURRENT, -1);
+            int voltageUv = intent.getIntExtra(BatteryManager.EXTRA_MAX_CHARGING_VOLTAGE, -1);
+            if (currentUa > 0 && voltageUv > 0) {
+                double watts = (currentUa / 1_000_000d) * (voltageUv / 1_000_000d);
+                superVooc = watts > SUPERVOOC_WATT_THRESHOLD;
+            }
+        }
+        if (superVooc != mIsSuperVooc) {
+            mIsSuperVooc = superVooc;
+            updateChargingColorEffect();
+        }
+    }
+
+    /** Apply / clear the SuperVOOC charging-fill color effect for the current state. */
+    private void updateChargingColorEffect() {
+        boolean active = isCharging() && mIsSuperVooc && isAttachedToWindow();
+        if (!active || mChargingIconStyle == CHARGE_STYLE_OFF) {
+            stopRainbow();
+            mDrawable.setChargingColorOverride(0);
+            return;
+        }
+        if (mChargingIconStyle == CHARGE_STYLE_RAINBOW) {
+            startRainbow();
+        } else { // CHARGE_STYLE_STATIC: follow the system accent so it matches the theme.
+            stopRainbow();
+            mDrawable.setChargingColorOverride(
+                    Utils.getColorAttrDefaultColor(getContext(), android.R.attr.colorAccent));
+        }
+    }
+
+    private void startRainbow() {
+        if (mRainbowAnimator != null && mRainbowAnimator.isStarted()) return;
+        mRainbowAnimator = ValueAnimator.ofFloat(0f, 1f);
+        mRainbowAnimator.setDuration(RAINBOW_CYCLE_MS);
+        mRainbowAnimator.setRepeatCount(ValueAnimator.INFINITE);
+        mRainbowAnimator.setInterpolator(null); // linear hue sweep
+        mRainbowAnimator.addUpdateListener(a -> {
+            mRainbowHsv[0] = ((float) a.getAnimatedValue()) * 360f;
+            mDrawable.setChargingColorOverride(Color.HSVToColor(mRainbowHsv));
+        });
+        mRainbowAnimator.start();
+    }
+
+    private void stopRainbow() {
+        if (mRainbowAnimator != null) {
+            mRainbowAnimator.cancel();
+            mRainbowAnimator = null;
+        }
     }
 
     public void dump(PrintWriter pw, String[] args) {
