@@ -23,6 +23,7 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
@@ -40,6 +41,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.*
 import androidx.compose.ui.text.style.TextAlign
@@ -141,6 +145,52 @@ fun AxionVolumeDialogContent(
     }
 }
 
+// Glass UI "smoked crystal": when glass_ui_volume is on, the Axion volume pill renders as dark
+// translucent glass (the wallpaper reads through) with a thin top-lit sheen outline, matching QS.
+private const val GLASS_UI_VOLUME_SETTING = "glass_ui_volume"
+private val GLASS_SMOKE = Color(0xFF0B0F14)
+
+@Composable
+internal fun rememberGlassVolume(): Boolean {
+    val cr = LocalContext.current.contentResolver
+    fun read(): Boolean = try {
+        android.provider.Settings.System.getIntForUser(
+            cr, GLASS_UI_VOLUME_SETTING, 0, android.os.UserHandle.USER_CURRENT) != 0
+    } catch (_: Throwable) {
+        false
+    }
+    var enabled by remember { mutableStateOf(read()) }
+    DisposableEffect(cr) {
+        val obs = object : android.database.ContentObserver(null) {
+            override fun onChange(selfChange: Boolean) { enabled = read() }
+        }
+        cr.registerContentObserver(
+            android.provider.Settings.System.getUriFor(GLASS_UI_VOLUME_SETTING),
+            false, obs, android.os.UserHandle.USER_ALL)
+        onDispose { cr.unregisterContentObserver(obs) }
+    }
+    return enabled
+}
+
+/** Fills [shape] with dark translucent smoke + sheen when glass is on, else the opaque [fallback]. */
+@Composable
+private fun Modifier.axionVolumeSurface(shape: Shape, fallback: Color): Modifier {
+    return if (rememberGlassVolume()) {
+        this.background(GLASS_SMOKE.copy(alpha = 0.62f), shape)
+            .border(
+                0.8.dp,
+                Brush.verticalGradient(
+                    0f to Color.White.copy(alpha = 0.35f),
+                    0.5f to Color.White.copy(alpha = 0.06f),
+                    1f to Color.White.copy(alpha = 0.14f),
+                ),
+                shape,
+            )
+    } else {
+        this.background(fallback, shape)
+    }
+}
+
 @Composable
 private fun CollapsedVolumeDialog(viewModel: AxionVolumeDialogViewModel) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -165,7 +215,8 @@ private fun CollapsedVolumeDialog(viewModel: AxionVolumeDialogViewModel) {
             modifier = Modifier
                 .width(SliderWidthCollapsed)
                 .clip(RoundedCornerShape(32.dp))
-                .background(MaterialTheme.colorScheme.surfaceBright),
+                .axionVolumeSurface(
+                    RoundedCornerShape(32.dp), MaterialTheme.colorScheme.surfaceBright),
             contentAlignment = Alignment.Center
         ) {
             Column(
@@ -231,8 +282,10 @@ private fun ExpandedVolumeDialog(viewModel: AxionVolumeDialogViewModel) {
             modifier = Modifier.size(VolumeButtonsSize),
             shape = CircleShape,
             colors = ButtonDefaults.filledTonalButtonColors(
-                containerColor = MaterialTheme.colorScheme.surfaceBright,
-                contentColor = MaterialTheme.colorScheme.onSurface
+                containerColor = if (rememberGlassVolume()) GLASS_SMOKE.copy(alpha = 0.62f)
+                    else MaterialTheme.colorScheme.surfaceBright,
+                contentColor = if (rememberGlassVolume()) Color.White
+                    else MaterialTheme.colorScheme.onSurface
             ),
             contentPadding = PaddingValues(0.dp)
         ) {
@@ -281,7 +334,8 @@ private fun ExpandedPanelContent(
         modifier = Modifier
             .width(panelWidth)
             .clip(RoundedCornerShape(cornerRadius))
-            .background(MaterialTheme.colorScheme.surfaceBright)
+            .axionVolumeSurface(
+                RoundedCornerShape(cornerRadius), MaterialTheme.colorScheme.surfaceBright)
     ) {
         Column(
             modifier = Modifier.padding(vertical = 12.dp),

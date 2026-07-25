@@ -74,6 +74,7 @@ import android.os.Message;
 import android.os.SystemClock;
 import android.os.Trace;
 import android.os.VibrationEffect;
+import android.os.UserHandle;
 import android.provider.Settings;
 import android.provider.Settings.Global;
 import android.text.InputFilter;
@@ -301,6 +302,19 @@ public class VolumeDialogImpl implements VolumeDialog, Dumpable,
     @VisibleForTesting View mODICaptionsTooltipView = null;
 
     private final boolean mUseBackgroundBlur;
+    // Glass UI (volume): when Settings.System.glass_ui_volume is on, force the cross-window
+    // background blur and make the row pills translucent so the wallpaper blur shows through
+    // (frosted glass instead of an opaque colorSurface panel). Off by default.
+    private final boolean mGlassVolume;
+    private static final int GLASS_VOLUME_ROW_ALPHA = 0x59; // ~35% so blur reads through the pill
+    // Stock volume_dialog_background_blur_radius is 0dp (no frost). Glass needs a real radius.
+    private static final int GLASS_VOLUME_BLUR_RADIUS_DP = 60;
+    // Smoked-crystal tint over the blur (ARGB): dark cool smoke at ~25%, kept light so the
+    // frosted wallpaper clearly reads through (matching the QS tiles).
+    private static final int GLASS_VOLUME_SMOKE_TINT = 0x400B0F14;
+    // Top-lit sheen stroke on the glass pills (~45% white), matching the QS glass tiles.
+    private static final int GLASS_VOLUME_SHEEN_COLOR = 0x73FFFFFF;
+    private static final int GLASS_VOLUME_SHEEN_WIDTH_DP = 1;
     private Consumer<Boolean> mCrossWindowBlurEnabledListener;
     private BackgroundBlurDrawable mDialogRowsViewBackground;
     private final InteractionJankMonitor mInteractionJankMonitor;
@@ -375,8 +389,11 @@ public class VolumeDialogImpl implements VolumeDialog, Dumpable,
             mContext.getResources().getInteger(R.integer.config_dialogShowAnimationDurationMs);
         mDialogHideAnimationDurationMs =
             mContext.getResources().getInteger(R.integer.config_dialogHideAnimationDurationMs);
+        mGlassVolume = Settings.System.getIntForUser(mContext.getContentResolver(),
+                "glass_ui_volume", 0, UserHandle.USER_CURRENT) != 0;
         mUseBackgroundBlur =
-            mContext.getResources().getBoolean(R.bool.config_volumeDialogUseBackgroundBlur);
+            mContext.getResources().getBoolean(R.bool.config_volumeDialogUseBackgroundBlur)
+                    || mGlassVolume;
         mInteractionJankMonitor = interactionJankMonitor;
         mVolumePanelNavigationInteractor = volumePanelNavigationInteractor;
         mVolumeNavigator = volumeNavigator;
@@ -388,8 +405,12 @@ public class VolumeDialogImpl implements VolumeDialog, Dumpable,
         dumpManager.registerDumpable("VolumeDialogImpl", this);
 
         if (mUseBackgroundBlur) {
-            final int dialogRowsViewColorAboveBlur = mContext.getColor(
-                    R.color.volume_dialog_background_color_above_blur);
+            // Glass UI "smoked crystal": tint the blur with dark cool smoke (matches the QS
+            // glass tiles) instead of the stock above-blur surface color, so the wallpaper
+            // frosts through dimmed and the white content stays legible.
+            final int dialogRowsViewColorAboveBlur = mGlassVolume
+                    ? GLASS_VOLUME_SMOKE_TINT
+                    : mContext.getColor(R.color.volume_dialog_background_color_above_blur);
             final int dialogRowsViewColorNoBlur = mContext.getColor(
                     R.color.volume_dialog_background_color);
             mCrossWindowBlurEnabledListener = (enabled) -> {
@@ -602,8 +623,14 @@ public class VolumeDialogImpl implements VolumeDialog, Dumpable,
                     mDialogRowsViewBackground.setCornerRadius(
                             mContext.getResources().getDimensionPixelSize(Utils.getThemeAttr(
                                     mContext, android.R.attr.dialogCornerRadius)));
-                    mDialogRowsViewBackground.setBlurRadius(resources.getDimensionPixelSize(
-                            R.dimen.volume_dialog_background_blur_radius));
+                    // Stock radius is 0dp (no visible frost). Under glass, use a real blur radius
+                    // so the wallpaper actually frosts behind the translucent pills.
+                    final int blurRadius = mGlassVolume
+                            ? Math.round(GLASS_VOLUME_BLUR_RADIUS_DP
+                                    * resources.getDisplayMetrics().density)
+                            : resources.getDimensionPixelSize(
+                                    R.dimen.volume_dialog_background_blur_radius);
+                    mDialogRowsViewBackground.setBlurRadius(blurRadius);
                     mDialogRowsView.setBackground(mDialogRowsViewBackground);
                 }
 
@@ -648,6 +675,12 @@ public class VolumeDialogImpl implements VolumeDialog, Dumpable,
                 // animate up and down when the drawer is opened/closed.
                 if (ringerAndDrawerBg != null && ringerAndDrawerBg.getNumberOfLayers() > 0) {
                     mRingerAndDrawerContainerBackground = ringerAndDrawerBg.getDrawable(0);
+                    if (mGlassVolume) {
+                        // Glass UI: the ringer/drawer pill must be translucent too, or it hides
+                        // the SF-blurred backdrop behind its part of the dialog.
+                        mRingerAndDrawerContainerBackground.mutate()
+                                .setAlpha(GLASS_VOLUME_ROW_ALPHA);
+                    }
 
                     updateBackgroundForDrawerClosedAmount();
                     setTopContainerBackgroundDrawable();
@@ -1749,8 +1782,15 @@ public class VolumeDialogImpl implements VolumeDialog, Dumpable,
 
                 // Set the background on each of the rows. We'll remove this from the last row after
                 // the loop, since the last row's background is drawn by the main volume container.
-                row.view.setBackgroundDrawable(
-                        mContext.getDrawable(R.drawable.volume_row_rounded_background));
+                Drawable rowBg = mContext.getDrawable(R.drawable.volume_row_rounded_background);
+                if (mGlassVolume && rowBg != null) {
+                    // Glass UI: translucent pill so the container blur shows through, plus a
+                    // thin top-lit sheen stroke to read as glass (matching the QS tiles).
+                    rowBg = rowBg.mutate();
+                    rowBg.setAlpha(GLASS_VOLUME_ROW_ALPHA);
+                    applyGlassVolumeSheen(rowBg);
+                }
+                row.view.setBackgroundDrawable(rowBg);
             }
 
             if (row.view.isShown()) {
@@ -1768,7 +1808,19 @@ public class VolumeDialogImpl implements VolumeDialog, Dumpable,
                         ((LinearLayout.LayoutParams) layoutParams);
                 linearLayoutParams.setMarginStart(0);
                 linearLayoutParams.setMarginEnd(0);
-                lastVisibleChild.setBackgroundColor(Color.TRANSPARENT);
+                if (mGlassVolume) {
+                    // Glass UI: keep a translucent pill so the last row matches the others and
+                    // still reveals the container blur, instead of a fully transparent row.
+                    Drawable lastBg = mContext.getDrawable(R.drawable.volume_row_rounded_background);
+                    if (lastBg != null) {
+                        lastBg = lastBg.mutate();
+                        lastBg.setAlpha(GLASS_VOLUME_ROW_ALPHA);
+                        applyGlassVolumeSheen(lastBg);
+                    }
+                    lastVisibleChild.setBackground(lastBg);
+                } else {
+                    lastVisibleChild.setBackgroundColor(Color.TRANSPARENT);
+                }
             }
         }
 
@@ -2346,6 +2398,15 @@ public class VolumeDialogImpl implements VolumeDialog, Dumpable,
      * Since we can't be both above and below the volume row view, we'll be below it, and render the
      * background color in the container since they're both above that.
      */
+    // Glass UI: add a thin top-lit sheen stroke to a glass pill drawable, if it supports one.
+    private void applyGlassVolumeSheen(Drawable d) {
+        if (d instanceof android.graphics.drawable.GradientDrawable) {
+            final int w = Math.max(1, Math.round(GLASS_VOLUME_SHEEN_WIDTH_DP
+                    * mContext.getResources().getDisplayMetrics().density));
+            ((android.graphics.drawable.GradientDrawable) d).setStroke(w, GLASS_VOLUME_SHEEN_COLOR);
+        }
+    }
+
     private void setTopContainerBackgroundDrawable() {
         if (mTopContainer == null) {
             return;
@@ -2366,13 +2427,20 @@ public class VolumeDialogImpl implements VolumeDialog, Dumpable,
 
             ShapeDrawable roundedDrawable = new ShapeDrawable(
                     new RoundRectShape(radius, null, null));
-            roundedDrawable.getPaint().setColor(Utils.getColorAttrDefaultColor(
-                    mContext, com.android.internal.R.attr.colorSurface));
+            // Glass UI "smoked crystal": the top container paints the visible panel area, so an
+            // opaque colorSurface here would sit above the SF-blurred backdrop and hide the
+            // frost entirely. Use the translucent smoke tint instead.
+            roundedDrawable.getPaint().setColor(mGlassVolume
+                    ? GLASS_VOLUME_SMOKE_TINT
+                    : Utils.getColorAttrDefaultColor(
+                            mContext, com.android.internal.R.attr.colorSurface));
 
             background = new LayerDrawable(new Drawable[] { roundedDrawable });
         } else {
-            final ColorDrawable solidDrawable = new ColorDrawable(
-                Utils.getColorAttrDefaultColor(mContext, com.android.internal.R.attr.colorSurface));
+            final ColorDrawable solidDrawable = new ColorDrawable(mGlassVolume
+                    ? GLASS_VOLUME_SMOKE_TINT
+                    : Utils.getColorAttrDefaultColor(
+                            mContext, com.android.internal.R.attr.colorSurface));
 
             background = new LayerDrawable(new Drawable[] { solidDrawable });
         }

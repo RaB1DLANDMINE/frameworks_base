@@ -33,6 +33,7 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.indication
@@ -59,9 +60,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -72,11 +75,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import android.graphics.ComposeShader
+import android.graphics.PorterDuff
+import android.graphics.RuntimeShader
+import androidx.compose.ui.graphics.LinearGradientShader
+import androidx.compose.ui.graphics.RadialGradientShader
+import androidx.compose.ui.graphics.Shader
+import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalConfiguration
@@ -136,6 +147,7 @@ import com.android.systemui.qs.ui.compose.borderOnFocus
 import com.android.systemui.res.R
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.callbackFlow
 
 @Composable
@@ -283,9 +295,10 @@ fun ContentScope.Tile(
             modifier =
                 modifier
                     .then(surfaceRevealModifier)
-                    .thenIf(!wantCircle) { 
-                        modifier.borderOnFocus(color = focusBorderColor, outerShape.topEnd) 
+                    .thenIf(!wantCircle) {
+                        modifier.borderOnFocus(color = focusBorderColor, outerShape.topEnd)
                     }
+                    .glassSheenOutline(outerShape, enabled = !wantCircle)
                     .fillMaxWidth()
                     .height(tileHeight)
                     .tileToggleAnimation(animationStyle, uiState.state)
@@ -537,7 +550,8 @@ fun TileContainer(
                                 drawRect(brush = brush)
                             }
                         }
-                },
+                }
+                .glassTileNoise(),
         content = content,
     )
 }
@@ -560,14 +574,15 @@ fun LargeStaticTile(
                 clip = true
                 this.shape = tileShape
             }
+            .glassSheenOutline(tileShape)
             .drawBehind {
-                val brush = colors.tileBackgroundGradient
-                if (brush != null) {
-                    drawRect(brush = brush)
-                } else {
-                    drawRect(color = colors.background)
-                }
+                // Fill first, then layer any gradient/sheen brush over it. Opaque brushes
+                // (the QS gradient feature) fully cover the fill, so this stays equivalent
+                // for them, while translucent glass brushes need the fill underneath.
+                drawRect(color = colors.background)
+                colors.tileBackgroundGradient?.let { drawRect(brush = it) }
             }
+            .glassTileNoise()
             .height(TileHeight)
             .largeTilePadding()
     ) {
@@ -757,6 +772,263 @@ fun rememberQsGradient(): Boolean {
 
     return enabled
 }
+
+/** Glass UI (Settings.System key, shared with the legacy view path and InfinitySuite toggle). */
+private const val GLASS_UI_QS_SETTING = "glass_ui_qs"
+
+/**
+ * Glass UI: when the `glass_ui_qs` toggle is on, tiles render as frosted translucent glass
+ * (the shade's cross-window blur shows through) and active tiles glow with an accent bloom
+ * behind the icon instead of flooding the whole tile with the accent color.
+ */
+@Composable
+fun rememberGlassUi(): Boolean {
+    val context = LocalContext.current
+    val contentResolver = context.contentResolver
+
+    fun readEnabled(): Boolean {
+        return try {
+            Settings.System.getIntForUser(
+                contentResolver, GLASS_UI_QS_SETTING, 0,
+                UserHandle.USER_CURRENT
+            ) != 0
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    var enabled by remember { mutableStateOf(readEnabled()) }
+
+    DisposableEffect(contentResolver) {
+        val observer = object : ContentObserver(null) {
+            override fun onChange(selfChange: Boolean) {
+                enabled = readEnabled()
+            }
+        }
+        contentResolver.registerContentObserver(
+            Settings.System.getUriFor(GLASS_UI_QS_SETTING),
+            false, observer, UserHandle.USER_ALL
+        )
+        onDispose { contentResolver.unregisterContentObserver(observer) }
+    }
+
+    return enabled
+}
+
+/**
+ * Glass UI: a thin top-lit sheen outline (like light catching a glass edge) around a glass
+ * surface. White ~35% at the top edge fading to a faint bottom catch. Gated on `glass_ui_qs`.
+ */
+@Composable
+fun Modifier.glassSheenOutline(shape: Shape, enabled: Boolean = true): Modifier {
+    if (!enabled || !rememberGlassUi()) return this
+    val brush = Brush.verticalGradient(
+        0f to Color.White.copy(alpha = 0.35f),
+        0.5f to Color.White.copy(alpha = 0.06f),
+        1f to Color.White.copy(alpha = 0.14f),
+    )
+    return this.border(width = 0.8.dp, brush = brush, shape = shape)
+}
+
+/** Glass UI: Settings.System key for the animated-noise layer on glass components. */
+private const val GLASS_UI_NOISE_SETTING = "glass_ui_noise"
+
+/**
+ * Glass UI: when the `glass_ui_noise` toggle is on (in addition to `glass_ui_qs`), glass
+ * components get a slowly drifting film-grain layer, matching the Settings homepage noise.
+ */
+@Composable
+fun rememberGlassNoise(): Boolean {
+    val context = LocalContext.current
+    val contentResolver = context.contentResolver
+
+    fun readEnabled(): Boolean {
+        return try {
+            Settings.System.getIntForUser(
+                contentResolver, GLASS_UI_NOISE_SETTING, 0,
+                UserHandle.USER_CURRENT
+            ) != 0
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    var enabled by remember { mutableStateOf(readEnabled()) }
+
+    DisposableEffect(contentResolver) {
+        val observer = object : ContentObserver(null) {
+            override fun onChange(selfChange: Boolean) {
+                enabled = readEnabled()
+            }
+        }
+        contentResolver.registerContentObserver(
+            Settings.System.getUriFor(GLASS_UI_NOISE_SETTING),
+            false, observer, UserHandle.USER_ALL
+        )
+        onDispose { contentResolver.unregisterContentObserver(observer) }
+    }
+
+    return enabled
+}
+
+// Drifting film-grain over the smoked glass (matches the Settings homepage noise feel).
+// Very low alpha so it adds texture without fighting the white content.
+// Mini "northern lights" aurora, tinted in the Monet theme colours (passed as uniforms), drawn
+// subtly over each glass tile. Rippling vertical curtains that drift + shimmer, blended softly.
+private const val GLASS_NOISE_AGSL = "" +
+    "uniform float uTime;" +
+    "uniform float2 uResolution;" +
+    "uniform float3 uC1;" + // Monet primary
+    "uniform float3 uC2;" + // Monet secondary
+    "uniform float3 uC3;" + // Monet tertiary
+    "float hash(float2 p) {" +
+    "    p = fract(p * float2(123.34, 456.21));" +
+    "    p += dot(p, p + 45.32);" +
+    "    return fract(p.x * p.y);" +
+    "}" +
+    "float vnoise(float2 p) {" +
+    "    float2 i = floor(p); float2 f = fract(p);" +
+    "    float a = hash(i); float b = hash(i + float2(1.0, 0.0));" +
+    "    float c = hash(i + float2(0.0, 1.0)); float d = hash(i + float2(1.0, 1.0));" +
+    "    float2 u = f * f * (3.0 - 2.0 * f);" +
+    "    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);" +
+    "}" +
+    "float fbm(float2 p) { return vnoise(p) * 0.65 + vnoise(p * 2.1 + 4.1) * 0.35; }" +
+    "half4 main(float2 fragCoord) {" +
+    "    float2 uv = fragCoord / uResolution;" +
+    "    float t = uTime;" +
+    "    float warp = fbm(float2(uv.y * 3.0, t * 0.15)) * 0.5;" +
+    "    float x = uv.x * 2.0 + warp;" +
+    "    float bands = sin(x * 6.2831 + t * 0.5) * 0.5 + 0.5;" +
+    "    float ribbon = pow(bands, 2.0);" +
+    "    float shimmer = fbm(float2(x * 3.0, uv.y * 3.0 - t * 0.5));" +
+    "    ribbon = ribbon * (0.6 + 0.5 * shimmer);" +
+    // blend the three Monet tones across the ribbon strength and height
+    "    float3 col = mix(uC2, uC1, smoothstep(0.2, 0.9, ribbon));" +
+    "    col = mix(col, uC3, smoothstep(0.55, 1.0, uv.y) * 0.5);" +
+    "    float a = 0.14 * ribbon;" + // subtle, blended
+    "    return half4(half3(col * a), half(a));" + // premultiplied
+    "}"
+
+/**
+ * Glass UI: a mini Monet-tinted aurora layered over the glass surfaces when both `glass_ui_qs`
+ * and `glass_ui_noise` are enabled - a small version of the Settings northern-lights effect,
+ * blended softly in the theme colours. Time updates land in the draw phase only (no
+ * recomposition), throttled to ~15fps. Defensive: no-op if RuntimeShader is unavailable.
+ */
+@Composable
+fun Modifier.glassTileNoise(): Modifier {
+    if (!(rememberGlassUi() && rememberGlassNoise())) return this
+    val c1 = MaterialTheme.colorScheme.primary
+    val c2 = MaterialTheme.colorScheme.secondary
+    val c3 = MaterialTheme.colorScheme.tertiary
+    val time = remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(Unit) {
+        val startNanos = System.nanoTime()
+        while (true) {
+            time.floatValue = (System.nanoTime() - startNanos) / 1_000_000_000f
+            delay(66)
+        }
+    }
+    return this.drawWithCache {
+        val shader = try {
+            RuntimeShader(GLASS_NOISE_AGSL).apply {
+                setFloatUniform("uC1", c1.red, c1.green, c1.blue)
+                setFloatUniform("uC2", c2.red, c2.green, c2.blue)
+                setFloatUniform("uC3", c3.red, c3.green, c3.blue)
+            }
+        } catch (_: Throwable) {
+            null
+        }
+        val brush =
+            shader?.let { s ->
+                object : ShaderBrush() {
+                    override fun createShader(size: Size): Shader = s
+                }
+            }
+        onDrawBehind {
+            if (shader != null && brush != null) {
+                shader.setFloatUniform("uTime", time.floatValue)
+                shader.setFloatUniform("uResolution", size.width, size.height)
+                drawRect(brush = brush)
+            }
+        }
+    }
+}
+
+/**
+ * Glass UI "smoked crystal": a hairline light sheen across the top edge of the tile, like real
+ * glass catching light. Layered over the smoked fill via the tile background gradient slot.
+ */
+private class GlassSheenBrush : ShaderBrush() {
+    override fun createShader(size: Size): Shader =
+        LinearGradientShader(
+            from = Offset(0f, 0f),
+            to = Offset(0f, (size.height * 0.45f).coerceAtLeast(1f)),
+            colors = listOf(
+                Color.White.copy(alpha = GLASS_SHEEN_ALPHA),
+                Color.White.copy(alpha = 0f),
+            ),
+            colorStops = listOf(0f, 1f),
+        )
+
+    override fun equals(other: Any?): Boolean = other is GlassSheenBrush
+
+    override fun hashCode(): Int = javaClass.hashCode()
+}
+
+/**
+ * Glass UI: for an active tile, the top sheen plus an accent radial glow ("bloom") behind the
+ * icon, additively combined. The smoked fill stays in [TileColors.background]; this brush is
+ * layered on top. Bloom centers on the icon block (left for large tiles, center for icon-only).
+ */
+private class GlassActiveBrush(
+    private val color: Color,
+    private val iconOnly: Boolean,
+) : ShaderBrush() {
+    override fun createShader(size: Size): Shader {
+        val cx = if (iconOnly) size.width / 2f else size.height * 0.62f
+        val cy = size.height / 2f
+        val radius = (size.height * 1.05f).coerceAtLeast(1f)
+        val bloom =
+            RadialGradientShader(
+                center = Offset(cx, cy),
+                radius = radius,
+                colors = listOf(color.copy(alpha = GLASS_BLOOM_MAX_ALPHA), color.copy(alpha = 0f)),
+                colorStops = listOf(0f, 1f),
+            )
+        val sheen =
+            LinearGradientShader(
+                from = Offset(0f, 0f),
+                to = Offset(0f, (size.height * 0.45f).coerceAtLeast(1f)),
+                colors = listOf(
+                    Color.White.copy(alpha = GLASS_SHEEN_ALPHA),
+                    Color.White.copy(alpha = 0f),
+                ),
+                colorStops = listOf(0f, 1f),
+            )
+        return ComposeShader(sheen, bloom, PorterDuff.Mode.ADD)
+    }
+
+    override fun equals(other: Any?): Boolean =
+        other is GlassActiveBrush && other.color == color && other.iconOnly == iconOnly
+
+    override fun hashCode(): Int = 31 * color.hashCode() + iconOnly.hashCode()
+}
+
+// Smoked-glass fill: dark cool tint at moderate alpha, so the shade's cross-window blur reads
+// through dimmed and pure-white content stays legible on top of any wallpaper.
+private val GLASS_SMOKE = Color(0xFF0B0F14)
+private const val GLASS_SMOKE_ALPHA = 0.40f
+// How far the idle tile smoke is tinted toward the Monet primary (0 = neutral dark, 1 = full
+// accent). ~0.24 gives a bold accent hue that suits the wallpaper without going neon.
+private const val GLASS_SMOKE_TINT_FRACTION = 0.24f
+// Unavailable tiles are the same glass, just fainter, with dimmed content.
+private const val GLASS_SMOKE_ALPHA_UNAVAILABLE = 0.28f
+// Peak bloom alpha at the glow center (matches the legacy 0xC8 bloom).
+private const val GLASS_BLOOM_MAX_ALPHA = 0.78f
+// Top-edge light catch.
+private const val GLASS_SHEEN_ALPHA = 0.10f
 
 @Composable
 fun rememberQsTileBackgroundBrush(): Brush? {
@@ -1119,8 +1391,72 @@ private object TileDefaults {
         )
     }
 
+    /**
+     * Glass UI "smoked crystal": every tile - including unavailable ones - is the same dark
+     * translucent glass, so the shade blur reads through dimmed and pure-white content stays
+     * legible on any wallpaper. A hairline top sheen makes the surface read as glass; active
+     * tiles glow with an accent bloom behind the icon instead of flooding accent.
+     */
+    @Composable
+    fun glassTileColors(uiState: TileUiState, iconOnly: Boolean): TileColors {
+        // Circle shape mode draws an unclipped rect brush behind a circular fill; skip the
+        // sheen/bloom layer there so no square halo leaks outside the circle.
+        val circleMode = rememberTileShapeMode() == 4 && iconOnly
+        // Bolder idle fill: tint the neutral dark smoke toward the Monet primary so static tiles
+        // pick up the accent / cover-art hue - kept subtle (dark base preserved) so it never
+        // reads as neon and white content stays legible.
+        val tintedSmoke = androidx.compose.ui.graphics.lerp(
+            GLASS_SMOKE, MaterialTheme.colorScheme.primary, GLASS_SMOKE_TINT_FRACTION)
+        val smoke = tintedSmoke.copy(alpha = GLASS_SMOKE_ALPHA)
+        val onGlass = Color.White
+        val onGlassDim = Color.White.copy(alpha = 0.78f)
+        return when (uiState.state) {
+            STATE_ACTIVE ->
+                TileColors(
+                    background = smoke,
+                    iconBackground = Color.Transparent,
+                    label = onGlass,
+                    secondaryLabel = onGlassDim,
+                    icon = onGlass,
+                    iconBackgroundGradient = null,
+                    tileBackgroundGradient =
+                        if (circleMode) null
+                        else GlassActiveBrush(MaterialTheme.colorScheme.primary, iconOnly),
+                    outline = MaterialTheme.colorScheme.primary,
+                )
+
+            STATE_INACTIVE ->
+                TileColors(
+                    background = smoke,
+                    iconBackground = Color.Transparent,
+                    label = onGlass,
+                    secondaryLabel = onGlassDim,
+                    icon = onGlass,
+                    iconBackgroundGradient = null,
+                    tileBackgroundGradient = if (circleMode) null else GlassSheenBrush(),
+                    outline = onGlassDim,
+                )
+
+            else ->
+                TileColors(
+                    background = tintedSmoke.copy(alpha = GLASS_SMOKE_ALPHA_UNAVAILABLE),
+                    iconBackground = Color.Transparent,
+                    label = Color.White.copy(alpha = 0.55f),
+                    secondaryLabel = Color.White.copy(alpha = 0.45f),
+                    icon = Color.White.copy(alpha = 0.55f),
+                    iconBackgroundGradient = null,
+                    tileBackgroundGradient = if (circleMode) null else GlassSheenBrush(),
+                    outline = Color.White.copy(alpha = 0.45f),
+                )
+        }
+    }
+
     @Composable
     fun getColorForState(uiState: TileUiState, iconOnly: Boolean): TileColors {
+        // Glass UI replaces the per-state color floods with frost + bloom.
+        if (rememberGlassUi()) {
+            return glassTileColors(uiState, iconOnly)
+        }
         return when (uiState.state) {
             STATE_ACTIVE -> {
                 if (uiState.handlesSecondaryClick && !iconOnly) {

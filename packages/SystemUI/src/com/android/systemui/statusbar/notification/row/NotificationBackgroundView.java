@@ -313,13 +313,40 @@ public class NotificationBackgroundView extends View implements Dumpable,
     public void setTint(int tintColor) {
         Drawable baseLayer = getBaseBackgroundLayer();
         if (mIsBlurSupported) {
-            ((GradientDrawable) baseLayer.mutate()).setColor(tintColor);
+            GradientDrawable g = (GradientDrawable) baseLayer.mutate();
+            g.setColor(tintColor);
+            // Glass UI: make sure a non-glass row never keeps a leftover sheen rim.
+            g.setStroke(0, 0);
         } else {
             baseLayer.mutate().setTintMode(PorterDuff.Mode.SRC_ATOP);
             baseLayer.setTint(tintColor);
         }
         mTintColor = tintColor;
         setStatefulColors();
+        invalidate();
+    }
+
+    /**
+     * Glass UI: set the base fill to a translucent colour directly on the shape drawable so the
+     * alpha channel is honoured (the normal setTint() SRC_ATOP path keeps the drawable's original
+     * opaque alpha and would drop it). Used only by the notification-glass path.
+     */
+    public void setGlassTint(int tintColor, int sheenWidthPx, int sheenColor) {
+        try {
+            GradientDrawable g = (GradientDrawable) getBaseBackgroundLayer().mutate();
+            g.setColor(tintColor);
+            // Glass UI: a hairline warm-white rim so the card catches light like the QS tiles.
+            if (sheenWidthPx > 0) {
+                g.setStroke(sheenWidthPx, sheenColor);
+            } else {
+                g.setStroke(0, 0);
+            }
+        } catch (Throwable t) {
+            // Base layer isn't a shape for some reason - fall back to the normal path.
+            setTint(tintColor);
+            return;
+        }
+        mTintColor = tintColor;
         invalidate();
     }
 

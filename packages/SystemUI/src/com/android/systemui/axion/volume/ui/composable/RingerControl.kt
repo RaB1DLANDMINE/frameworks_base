@@ -97,8 +97,12 @@ fun RingerButton(
         modifier = modifier.size(size),
         shape = RoundedCornerShape(cornerRadius),
         colors = IconButtonDefaults.filledTonalIconButtonColors(
-            containerColor = MaterialTheme.colorScheme.surfaceBright,
-            contentColor = MaterialTheme.colorScheme.onSurface
+            containerColor = if (rememberGlassVolume())
+                androidx.compose.ui.graphics.Color(0xFF0B0F14).copy(alpha = 0.62f)
+                else MaterialTheme.colorScheme.surfaceBright,
+            contentColor = if (rememberGlassVolume())
+                androidx.compose.ui.graphics.Color.White
+                else MaterialTheme.colorScheme.onSurface
         )
     ) {
         Icon(

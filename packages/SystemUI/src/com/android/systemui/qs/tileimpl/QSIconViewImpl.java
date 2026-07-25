@@ -27,6 +27,11 @@ import android.content.Context;
 import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.content.res.Resources;
+import android.database.ContentObserver;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.UserHandle;
+import android.provider.Settings;
 import android.graphics.drawable.Animatable2;
 import android.graphics.drawable.Animatable2.AnimationCallback;
 import android.graphics.drawable.Drawable;
@@ -71,6 +76,25 @@ public class QSIconViewImpl extends QSIconView {
     private int mColorInactive;
     private int mColorActive;
 
+    // Glass UI (QS): when enabled, an active tile is frosted (no accent fill), so the icon must
+    // use the light inactive-variant tint instead of the dark active tint that assumes an accent
+    // background - otherwise the active icon would be invisible on the translucent tile.
+    private static final String GLASS_UI_QS_SETTING = "glass_ui_qs";
+    private boolean mGlassQsEnabled;
+    private final ContentObserver mGlassObserver =
+            new ContentObserver(new Handler(Looper.getMainLooper())) {
+                @Override
+                public void onChange(boolean selfChange) {
+                    final boolean enabled = readGlassQs();
+                    if (enabled != mGlassQsEnabled) {
+                        mGlassQsEnabled = enabled;
+                        if (mIcon instanceof ImageView && mState != -1) {
+                            setTint((ImageView) mIcon, colorForCurrentState());
+                        }
+                    }
+                }
+            };
+
     public QSIconViewImpl(Context context) {
         super(context);
 
@@ -83,9 +107,48 @@ public class QSIconViewImpl extends QSIconView {
             mColorActive = Utils.getColorAttrDefaultColor(context, R.attr.onShadeActive);
         }
 
+        mGlassQsEnabled = readGlassQs();
+
         mIcon = createIcon();
         addView(mIcon);
         mColorAnimator.setDuration(QS_ANIM_LENGTH);
+    }
+
+    private boolean readGlassQs() {
+        return Settings.System.getIntForUser(getContext().getContentResolver(),
+                GLASS_UI_QS_SETTING, 0, UserHandle.USER_CURRENT) != 0;
+    }
+
+    private int colorForCurrentState() {
+        if (mDisabledByPolicy || mState == Tile.STATE_UNAVAILABLE) {
+            return qsNewTiles() ? mColorUnavailable
+                    : Utils.getColorAttrDefaultColor(getContext(), R.attr.outline);
+        } else if (mState == Tile.STATE_ACTIVE) {
+            if (mGlassQsEnabled) {
+                return qsNewTiles() ? mColorInactive
+                        : Utils.getColorAttrDefaultColor(getContext(), R.attr.onShadeInactiveVariant);
+            }
+            return qsNewTiles() ? mColorActive
+                    : Utils.getColorAttrDefaultColor(getContext(), R.attr.onShadeActive);
+        } else {
+            return qsNewTiles() ? mColorInactive
+                    : Utils.getColorAttrDefaultColor(getContext(), R.attr.onShadeInactiveVariant);
+        }
+    }
+
+    @Override
+    protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        mGlassQsEnabled = readGlassQs();
+        getContext().getContentResolver().registerContentObserver(
+                Settings.System.getUriFor(GLASS_UI_QS_SETTING), false, mGlassObserver,
+                UserHandle.USER_ALL);
+    }
+
+    @Override
+    protected void onDetachedFromWindow() {
+        getContext().getContentResolver().unregisterContentObserver(mGlassObserver);
+        super.onDetachedFromWindow();
     }
 
     @Override
@@ -209,7 +272,7 @@ public class QSIconViewImpl extends QSIconView {
         if (qsNewTiles()) {
             return getCachedIconColorForState(state);
         } else {
-            return getIconColorForState(getContext(), state);
+            return getIconColorForState(getContext(), state, mGlassQsEnabled);
         }
     }
 
@@ -269,13 +332,16 @@ public class QSIconViewImpl extends QSIconView {
     /**
      * Color to tint the tile icon based on state
      */
-    private static int getIconColorForState(Context context, QSTile.State state) {
+    private static int getIconColorForState(Context context, QSTile.State state, boolean glassQs) {
         if (state.disabledByPolicy || state.state == Tile.STATE_UNAVAILABLE) {
             return Utils.getColorAttrDefaultColor(context, R.attr.outline);
         } else if (state.state == Tile.STATE_INACTIVE) {
             return Utils.getColorAttrDefaultColor(context, R.attr.onShadeInactiveVariant);
         } else if (state.state == Tile.STATE_ACTIVE) {
-            return Utils.getColorAttrDefaultColor(context, R.attr.onShadeActive);
+            // Glass UI: frosted active tile -> use the light inactive-variant tint so the icon
+            // stays visible instead of the dark active tint meant for an accent fill.
+            return Utils.getColorAttrDefaultColor(context,
+                    glassQs ? R.attr.onShadeInactiveVariant : R.attr.onShadeActive);
         } else {
             Log.e("QSIconView", "Invalid state " + state);
             return 0;
@@ -288,7 +354,8 @@ public class QSIconViewImpl extends QSIconView {
         } else if (state.state == Tile.STATE_INACTIVE) {
             return mColorInactive;
         } else if (state.state == Tile.STATE_ACTIVE) {
-            return mColorActive;
+            // Glass UI: frosted active tile -> light icon tint (see colorForCurrentState).
+            return mGlassQsEnabled ? mColorInactive : mColorActive;
         } else {
             Log.e("QSIconView", "Invalid state " + state);
             return 0;

@@ -39,6 +39,7 @@ import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.*
 import androidx.compose.ui.platform.*
 import androidx.compose.ui.unit.Dp
@@ -203,6 +204,7 @@ fun VolumeSlider(
 
     val primary = MaterialTheme.colorScheme.primary
     val onSurface = MaterialTheme.colorScheme.onSurface
+    val glassVolume = rememberGlassVolume()
     val density = LocalDensity.current
     val gradient = if (rememberGradientColorMode() == 1) {
         rememberGradientCustomColors()
@@ -356,7 +358,34 @@ fun VolumeSlider(
 
                         val minHeight = w
                         val ph = minHeight + (h - minHeight) * animatedValue
-                        if (gradientBrush != null) {
+                        if (glassVolume) {
+                            // Glass UI: draw the level indicator as an obvious frosted/blurred
+                            // object - a bright white rounded pill with a soft BlurMaskFilter
+                            // glow, so it reads as a clear glass handle floating on the smoke.
+                            val nc = drawContext.canvas.nativeCanvas
+                            val blur = 10f * density.density
+                            val glow = android.graphics.Paint().apply {
+                                isAntiAlias = true
+                                color = android.graphics.Color.WHITE
+                                maskFilter = android.graphics.BlurMaskFilter(
+                                    blur, android.graphics.BlurMaskFilter.Blur.NORMAL)
+                                alpha = 0x66
+                            }
+                            val core = android.graphics.Paint().apply {
+                                isAntiAlias = true
+                                color = android.graphics.Color.WHITE
+                                alpha = 0xE6
+                            }
+                            val top = h - ph
+                            val r = w / 2f
+                            // soft blurred glow behind
+                            nc.drawRoundRect(0f, top, w, h, r, r, glow)
+                            // crisp bright core so it stays an obvious object
+                            val inset = w * 0.22f
+                            nc.drawRoundRect(
+                                inset, top + inset, w - inset, h - inset,
+                                r, r, core)
+                        } else if (gradientBrush != null) {
                             drawRoundRect(
                                 brush = gradientBrush,
                                 topLeft = Offset(0f, h - ph),

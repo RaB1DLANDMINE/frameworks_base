@@ -17,9 +17,11 @@ import android.os.Looper
 import android.os.UserHandle
 import android.provider.Settings
 import android.view.HapticFeedbackConstants
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
@@ -36,6 +38,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -52,9 +55,11 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
+import com.android.systemui.qs.panels.ui.compose.infinitegrid.rememberGlassUi
 import com.android.systemui.res.R
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 
@@ -319,10 +324,38 @@ fun InfinityVolumeModule(
         }
     }
 
-    val trackBgColor = Color.White.copy(alpha = 0.18f)
-    val fillColor = Color.White.copy(alpha = 0.9f)
+    // Glass UI "smoked crystal": dark translucent track so the shade blur reads through,
+    // luminous frosted fill, white icon (matches the glass tiles in infinitegrid/Tile.kt).
+    // While the value is changing, the fill pulses with accent smoke and decays back to frost.
+    val glassUi = rememberGlassUi()
+    val trackBgColor =
+        if (glassUi) Color(0xFF0B0F14).copy(alpha = 0.40f) else Color.White.copy(alpha = 0.18f)
+    var glassPulse by remember { mutableStateOf(false) }
+    var glassPulseArmed by remember { mutableStateOf(false) }
+    LaunchedEffect(volumeFraction) {
+        if (!glassPulseArmed) {
+            // Skip the initial composition so opening the shade doesn't flash the accent.
+            glassPulseArmed = true
+            return@LaunchedEffect
+        }
+        glassPulse = true
+        delay(650)
+        glassPulse = false
+    }
+    val glassAccent = MaterialTheme.colorScheme.primary
+    val glassActive = glassPulse || isDragging
+    val fillTarget = when {
+        !glassUi -> Color.White.copy(alpha = 0.9f)
+        // Vibrant, fully-opaque accent while changing; settles to a calm accent-tinted frost
+        // (not flat grey) at rest so it always reads as crystal.
+        glassActive -> glassAccent
+        else -> glassAccent.copy(alpha = 0.45f)
+    }
+    // Snap to vibrant fast (120ms), ease back to frost slow (450ms).
+    val fillColor by animateColorAsState(
+        fillTarget, tween(if (glassActive) 120 else 450), label = "GlassSliderFill")
     val fillGradient = rememberVolumeSliderGradientBrush()
-    val iconTint = Color(0xFF2C2C2E)
+    val iconTint = if (glassUi) Color.White else Color(0xFF2C2C2E)
     val sliderCornerRadius = if (capsuleStyle) SLIDER_CAPSULE_RADIUS else SLIDER_CORNER_RADIUS
     val iconRes = if (volumeFraction <= 0.0001f) {
         R.drawable.ic_volume_media_mute
@@ -407,6 +440,14 @@ fun InfinityVolumeModule(
             .graphicsLayer { translationY = sliderOffsetY }
             .clip(RoundedCornerShape(sliderCornerRadius))
             .background(trackBgColor)
+            .let {
+                // Glass UI: thin top-lit sheen outline, matching the QS tiles.
+                if (glassUi) it.border(0.8.dp, Brush.verticalGradient(
+                    0f to Color.White.copy(alpha = 0.35f),
+                    0.5f to Color.White.copy(alpha = 0.06f),
+                    1f to Color.White.copy(alpha = 0.14f),
+                ), RoundedCornerShape(sliderCornerRadius)) else it
+            }
             .pointerInput(hapticsEnabled) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
@@ -513,7 +554,10 @@ fun InfinityVolumeModule(
                 .fillMaxHeight(currentFraction)
                 .align(Alignment.BottomCenter)
                 .let {
-                    if (fillGradient != null) {
+                    // Under glass the frost/vibrant-pulse fill wins over the separate slider
+                    // gradient feature, so the "smoked crystal + vibrant on change" look is
+                    // consistent regardless of the gradient toggle.
+                    if (fillGradient != null && !glassUi) {
                         it.background(fillGradient, fillShape)
                     } else {
                         it.background(fillColor, fillShape)

@@ -32,8 +32,11 @@ import android.animation.ValueAnimator;
 import android.annotation.IntDef;
 import android.annotation.SuppressLint;
 import android.content.Context;
+import android.database.ContentObserver;
 import android.graphics.Color;
 import android.os.Handler;
+import android.os.UserHandle;
+import android.provider.Settings;
 import android.util.Log;
 import android.util.MathUtils;
 import android.util.Pair;
@@ -182,19 +185,25 @@ public class ScrimController implements ViewTreeObserver.OnPreDrawListener, Dump
     private float mBouncerHiddenFraction = KeyguardBouncerConstants.EXPANSION_HIDDEN;
 
     private float getDefaultScrimAlpha(boolean ignoreCurrentState) {
+        float alpha;
         if (Flags.bouncerUiRevamp() && isBlurCurrentlySupported()) {
             // Hack to not make the shade transparent when shade blur is not enabled.
-            if (!Flags.notificationShadeBlur() && !ignoreCurrentState) {
+            if (!Flags.notificationShadeBlur() && !ignoreCurrentState
+                    && (mState == ScrimState.SHADE_LOCKED || (mState == ScrimState.KEYGUARD
+                        && mQsExpansion == 1))) {
                 // When we expand directly to full quick settings, shade state is KEYGUARD
-                if (mState == ScrimState.SHADE_LOCKED || (mState == ScrimState.KEYGUARD
-                        && mQsExpansion == 1)) {
-                    return BUSY_SCRIM_ALPHA;
-                }
+                alpha = BUSY_SCRIM_ALPHA;
+            } else {
+                alpha = Color.alpha(BouncerColors.surfaceColor(mContext, true)) / 255.0f;
             }
-            return Color.alpha(BouncerColors.surfaceColor(mContext, true)) / 255.0f;
         } else {
-            return BUSY_SCRIM_ALPHA;
+            alpha = BUSY_SCRIM_ALPHA;
         }
+        // Glass UI (QS): thin the shade/QS scrim so the wallpaper blur shows through.
+        if (mGlassUiQs) {
+            alpha *= GLASS_QS_SCRIM_FACTOR;
+        }
+        return alpha;
     }
 
     private float getDefaultScrimAlpha() {
@@ -215,6 +224,13 @@ public class ScrimController implements ViewTreeObserver.OnPreDrawListener, Dump
      * This should not be lower than 0.54, otherwise we won't pass GAR.
      */
     public static final float BUSY_SCRIM_ALPHA = 1f;
+
+    // Glass UI (QS): when Settings.System.glass_ui_qs is on, thin out the shade/QS scrim so the
+    // live wallpaper blur shows through the translucent tiles = frosted glass instead of a flat
+    // dull fill. Off by default. 0.4 keeps enough dim for text legibility while revealing blur.
+    private static final String GLASS_UI_QS_SETTING = "glass_ui_qs";
+    private static final float GLASS_QS_SCRIM_FACTOR = 0.4f;
+    private boolean mGlassUiQs;
 
     static final int TAG_KEY_ANIM = R.id.scrim;
     private static final int TAG_START_ALPHA = R.id.scrim_alpha_start;
@@ -445,6 +461,27 @@ public class ScrimController implements ViewTreeObserver.OnPreDrawListener, Dump
         mKeyguardTransitionInteractor = keyguardTransitionInteractor;
         mKeyguardInteractor = keyguardInteractor;
         mMainDispatcher = mainDispatcher;
+
+        // Glass UI (QS): track glass_ui_qs and refresh scrims live when it changes.
+        mGlassUiQs = readGlassUiQs();
+        final ContentObserver glassObserver = new ContentObserver(mHandler) {
+            @Override
+            public void onChange(boolean selfChange) {
+                boolean enabled = readGlassUiQs();
+                if (enabled != mGlassUiQs) {
+                    mGlassUiQs = enabled;
+                    scheduleUpdate();
+                }
+            }
+        };
+        mContext.getContentResolver().registerContentObserver(
+                Settings.System.getUriFor(GLASS_UI_QS_SETTING), false, glassObserver,
+                UserHandle.USER_ALL);
+    }
+
+    private boolean readGlassUiQs() {
+        return Settings.System.getIntForUser(mContext.getContentResolver(),
+                GLASS_UI_QS_SETTING, 0, UserHandle.USER_CURRENT) != 0;
     }
 
     /**

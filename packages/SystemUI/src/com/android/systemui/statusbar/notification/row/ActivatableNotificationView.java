@@ -347,6 +347,26 @@ public abstract class ActivatableNotificationView extends ExpandableOutlineView 
     }
 
     protected void setBackgroundTintColor(int color) {
+        // Glass UI: when glass_ui_notifications is on, tint the row with the SAME frosted material
+        // the QS tiles use (R.attr.shadeInactive) plus a hairline sheen rim, so the shade reads as
+        // one warm translucent crystal top-to-bottom instead of a cold black card. The background
+        // view uses GradientDrawable.setColor()/setStroke() when blur is supported, so the alpha is
+        // honored. Fully guarded - must never crash the shade.
+        try {
+            if (mBackgroundNormal != null && isGlassNotifications()) {
+                final int tint = glassNotifTint();
+                final int sheenPx = Math.round(
+                        GLASS_NOTIF_SHEEN_DP * getResources().getDisplayMetrics().density);
+                // Use setGlassTint (direct GradientDrawable.setColor) so the tint's alpha is
+                // honoured - the normal setTint() SRC_ATOP path would keep the row opaque, which
+                // is exactly why the effect looked like it wasn't applying.
+                mCurrentBackgroundTint = tint;
+                mBackgroundNormal.setGlassTint(tint, sheenPx, GLASS_NOTIF_SHEEN);
+                return;
+            }
+        } catch (Throwable t) {
+            // fall through to the normal path
+        }
         if (color != mCurrentBackgroundTint) {
             mCurrentBackgroundTint = color;
             if (notificationBackgroundTintOptimization() && color == mNormalColor) {
@@ -354,6 +374,37 @@ public abstract class ActivatableNotificationView extends ExpandableOutlineView 
                 color = 0;
             }
             mBackgroundNormal.setTint(color);
+        }
+    }
+
+    // Glass UI: alpha applied to QS's inactive-tile colour (R.attr.shadeInactive) so the row is the
+    // SAME frosted material as the tiles - kept a touch more opaque than QS (which uses 0x99) so
+    // multi-line notification text stays legible over busy wallpapers.
+    private static final int GLASS_NOTIF_ALPHA = 0xB8; // ~72%
+    // Glass sheen: a hairline warm-white rim so the card catches light like the QS tiles.
+    private static final int GLASS_NOTIF_SHEEN = 0x38FFFFFF; // white ~22%
+    private static final float GLASS_NOTIF_SHEEN_DP = 1.0f;
+    // Fallback RGB if the theme attr can't be resolved (the old cold-smoke hue).
+    private static final int GLASS_NOTIF_FALLBACK_RGB = 0x0B0F14;
+
+    private int glassNotifTint() {
+        int rgb = GLASS_NOTIF_FALLBACK_RGB;
+        try {
+            rgb = com.android.settingslib.Utils.getColorAttrDefaultColor(
+                    mContext, R.attr.shadeInactive) & 0x00FFFFFF;
+        } catch (Throwable t) {
+            // keep fallback
+        }
+        return (GLASS_NOTIF_ALPHA << 24) | rgb;
+    }
+
+    private boolean isGlassNotifications() {
+        try {
+            return android.provider.Settings.System.getIntForUser(
+                    mContext.getContentResolver(), "glass_ui_notifications", 0,
+                    android.os.UserHandle.USER_CURRENT) != 0;
+        } catch (Throwable t) {
+            return false;
         }
     }
 

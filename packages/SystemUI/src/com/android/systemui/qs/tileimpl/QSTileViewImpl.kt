@@ -29,9 +29,13 @@ import android.provider.Settings
 import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.content.res.Resources.ID_NULL
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.PorterDuff
+import android.graphics.RadialGradient
 import android.graphics.Rect
+import android.graphics.Shader
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.LayerDrawable
@@ -90,8 +94,12 @@ constructor(
     companion object {
         private const val INVALID = -1
         // Glass UI: Settings.System key + translucency applied to tile fills when enabled.
-        private const val GLASS_UI_SETTING = "glass_ui"
+        private const val GLASS_UI_SETTING = "glass_ui_qs"
         private const val GLASS_UI_TILE_ALPHA = 0x99 // ~60%, lets the blurred shade show through
+        // Glass UI: an active tile stays frosted (no accent flood) and instead gets an accent
+        // radial "bloom" glowing from behind the icon.
+        private const val GLASS_BLOOM_MAX_ALPHA = 0xC8 // peak alpha at the glow center (~78%)
+        private const val GLASS_BLOOM_RADIUS_FACTOR = 1.75f // glow radius relative to icon size
         private const val BACKGROUND_NAME = "background"
         private const val LABEL_NAME = "label"
         private const val SECONDARY_LABEL_NAME = "secondaryLabel"
@@ -183,14 +191,87 @@ constructor(
                 val enabled = readGlassUi()
                 if (enabled != glassUiEnabled) {
                     glassUiEnabled = enabled
-                    setColor(backgroundColor)
+                    refreshGlassColors()
                 }
             }
         }
 
+    // Under glass, every tile fill is the same frosted-neutral color (active tiles no longer flood
+    // with accent - they get a bloom instead). Computed from the inactive shade color.
+    private val glassBaseTint = (colorInactive and 0x00FFFFFF) or (GLASS_UI_TILE_ALPHA shl 24)
+
+    private fun refreshGlassColors() {
+        if (lastState == INVALID) {
+            // Not bound yet; just re-tint the current fill and let the next bind set the rest.
+            setColor(backgroundColor)
+            invalidate()
+            return
+        }
+        setAllColors(
+            getBackgroundColorForState(lastState, lastDisabledByPolicy),
+            getLabelColorForState(lastState, lastDisabledByPolicy),
+            getSecondaryLabelColorForState(lastState, lastDisabledByPolicy),
+            getChevronColorForState(lastState, lastDisabledByPolicy),
+            getOverlayColorForState(lastState),
+        )
+        setBloomActive(lastState == Tile.STATE_ACTIVE, animate = false)
+    }
+
     private fun readGlassUi(): Boolean =
         Settings.System.getIntForUser(
             context.contentResolver, GLASS_UI_SETTING, 0, UserHandle.USER_CURRENT) != 0
+
+    // Glass UI bloom: accent radial glow drawn behind the icon for active tiles.
+    private val bloomPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private var bloomShaderCx = Float.NaN
+    private var bloomShaderCy = Float.NaN
+    private var bloomShaderRadius = -1f
+    private var bloomAlpha = 0f // 0..1 current glow strength
+    private var bloomActive = false // whether the current tile state is active
+    private val bloomAnimator: ValueAnimator =
+        ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = QS_ANIM_LENGTH
+            addUpdateListener {
+                bloomAlpha = it.animatedValue as Float
+                invalidate()
+            }
+        }
+
+    private fun setBloomActive(active: Boolean, animate: Boolean) {
+        if (active == bloomActive) return
+        bloomActive = active
+        val target = if (active) 1f else 0f
+        bloomAnimator.cancel()
+        if (animate && isShown) {
+            bloomAnimator.setFloatValues(bloomAlpha, target)
+            bloomAnimator.start()
+        } else {
+            bloomAlpha = target
+            invalidate()
+        }
+    }
+
+    override fun dispatchDraw(canvas: Canvas) {
+        if (glassUiEnabled && bloomAlpha > 0.01f && icon.width > 0) {
+            val cx = icon.left + icon.width / 2f
+            val cy = icon.top + icon.height / 2f
+            val radius = icon.width * GLASS_BLOOM_RADIUS_FACTOR
+            if (radius > 0f &&
+                (cx != bloomShaderCx || cy != bloomShaderCy || radius != bloomShaderRadius)) {
+                val center = (colorActive and 0x00FFFFFF) or (0xFF shl 24)
+                bloomPaint.shader = RadialGradient(
+                    cx, cy, radius,
+                    intArrayOf(center, colorActive and 0x00FFFFFF),
+                    floatArrayOf(0f, 1f), Shader.TileMode.CLAMP)
+                bloomShaderCx = cx
+                bloomShaderCy = cy
+                bloomShaderRadius = radius
+            }
+            bloomPaint.alpha = (GLASS_BLOOM_MAX_ALPHA * bloomAlpha).toInt()
+            canvas.drawCircle(cx, cy, radius, bloomPaint)
+        }
+        super.dispatchDraw(canvas)
+    }
 
     private val singleAnimator: ValueAnimator =
         ValueAnimator().apply {
@@ -790,6 +871,12 @@ constructor(
             }
         }
 
+        // Glass UI: active tiles glow with an accent bloom instead of an accent fill.
+        setBloomActive(
+            state.state == Tile.STATE_ACTIVE && !state.disabledByPolicy,
+            animate = allowAnimations,
+        )
+
         // Right side icon
         loadSideViewDrawableIfNecessary(state)
 
@@ -843,8 +930,7 @@ constructor(
     }
 
     private fun setColor(color: Int) {
-        val tint =
-            if (glassUiEnabled) (color and 0x00FFFFFF) or (GLASS_UI_TILE_ALPHA shl 24) else color
+        val tint = if (glassUiEnabled) glassBaseTint else color
         backgroundBaseDrawable.mutate().setTint(tint)
         backgroundColor = color
     }
@@ -857,7 +943,7 @@ constructor(
         val enabled = readGlassUi()
         if (enabled != glassUiEnabled) {
             glassUiEnabled = enabled
-            setColor(backgroundColor)
+            refreshGlassColors()
         }
     }
 
@@ -933,6 +1019,8 @@ constructor(
     private fun getLabelColorForState(state: Int, disabledByPolicy: Boolean = false): Int {
         return when {
             state == Tile.STATE_UNAVAILABLE || disabledByPolicy -> colorLabelUnavailable
+            // Glass UI: frosted active tile -> readable light label (see setColor / bloom).
+            glassUiEnabled && state == Tile.STATE_ACTIVE -> colorLabelInactive
             state == Tile.STATE_ACTIVE -> colorLabelActive
             state == Tile.STATE_INACTIVE -> colorLabelInactive
             else -> {
@@ -945,6 +1033,7 @@ constructor(
     private fun getSecondaryLabelColorForState(state: Int, disabledByPolicy: Boolean = false): Int {
         return when {
             state == Tile.STATE_UNAVAILABLE || disabledByPolicy -> colorSecondaryLabelUnavailable
+            glassUiEnabled && state == Tile.STATE_ACTIVE -> colorSecondaryLabelInactive
             state == Tile.STATE_ACTIVE -> colorSecondaryLabelActive
             state == Tile.STATE_INACTIVE -> colorSecondaryLabelInactive
             else -> {
