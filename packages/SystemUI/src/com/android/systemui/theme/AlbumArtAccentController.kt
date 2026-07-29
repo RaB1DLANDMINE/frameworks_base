@@ -20,8 +20,12 @@ import android.app.WallpaperColors
 import android.content.Context
 import android.database.ContentObserver
 import android.graphics.drawable.Icon
+import android.media.AudioAttributes
+import android.media.session.MediaController
+import android.media.session.MediaSession
 import android.net.Uri
 import android.os.UserHandle
+import android.provider.Settings
 import android.util.Log
 import com.android.systemui.CoreStartable
 import com.android.systemui.dagger.SysUISingleton
@@ -29,7 +33,10 @@ import com.android.systemui.dagger.qualifiers.Background
 import com.android.systemui.dagger.qualifiers.Main
 import com.android.systemui.media.controls.domain.pipeline.MediaDataManager
 import com.android.systemui.media.controls.shared.model.MediaData
+import com.android.systemui.monet.ColorScheme
 import com.android.systemui.settings.UserTracker
+import com.android.systemui.shade.STATE_CLOSED
+import com.android.systemui.shade.ShadeExpansionStateManager
 import com.android.systemui.util.concurrency.DelayableExecutor
 import com.android.systemui.util.settings.SystemSettings
 import dagger.Lazy
@@ -57,6 +64,7 @@ constructor(
     private val mediaDataManagerLazy: Lazy<MediaDataManager>,
     private val systemSettings: SystemSettings,
     private val userTracker: UserTracker,
+    private val shadeExpansionStateManager: ShadeExpansionStateManager,
     @Main private val mainExecutor: Executor,
     @Background private val bgExecutor: DelayableExecutor,
 ) : CoreStartable {
@@ -67,6 +75,18 @@ constructor(
     private var listening = false
     // Handle to cancel a pending (debounced) apply/clear, so rapid changes coalesce.
     private var pendingCancel: Runnable? = null
+
+    // Applying the accent goes through the Material-You overlay pipeline, which commits an RRO and
+    // fans out a system-wide theme change. While QuickSettings is open that fan-out reinflates the
+    // panel and collapses it. So while the shade is open we DON'T re-theme: we stash the intended
+    // change and instead push a local live accent to the QS glow (see LIVE_ACCENT_KEY) for a smooth
+    // in-place color shift, then reconcile the real overlay once the shade closes (invisibly).
+    // Main-thread state only (shade callbacks + media callbacks both hop to main).
+    private var shadeOpen = false
+    private var pendingApply: WallpaperColors? = null
+    private var pendingClear = false
+    // Last value written to LIVE_ACCENT_KEY, so we don't spam Settings with redundant binder writes.
+    private var lastLiveAccentWritten = 0
 
     private val settingsObserver =
         object : ContentObserver(null) {
@@ -84,14 +104,14 @@ constructor(
                 data: MediaData,
                 immediately: Boolean,
             ) {
-                if (data.isPlaying == true) {
+                if (data.isPlaying == true && !isVideoSession(data.token)) {
                     currentPlayingKey = key
                     val art = data.artwork
                     if (art != null) {
                         scheduleApply(art)
                     }
                 } else if (key == currentPlayingKey) {
-                    // The session we were tracking paused/stopped.
+                    // The session we were tracking paused/stopped (or is a video session).
                     currentPlayingKey = null
                     scheduleClear()
                 }
@@ -111,7 +131,28 @@ constructor(
             settingsObserver,
             UserHandle.USER_ALL,
         )
+        // Shade open/close drives whether we re-theme now or defer. Callbacks arrive on main.
+        shadeExpansionStateManager.addStateListener { state ->
+            mainExecutor.execute { onPanelStateChanged(state) }
+        }
         updateEnabled()
+    }
+
+    private fun onPanelStateChanged(state: Int) {
+        val open = state != STATE_CLOSED
+        if (open == shadeOpen) return
+        shadeOpen = open
+        if (!open) {
+            // Shade just closed: apply the real overlay now, while nothing is visible to collapse.
+            val apply = pendingApply
+            when {
+                apply != null -> themeOverlayController.setMediaAccentColors(apply)
+                pendingClear -> themeOverlayController.clearMediaAccentColors()
+            }
+            pendingApply = null
+            pendingClear = false
+            clearLiveAccent()
+        }
     }
 
     private fun isEnabled(): Boolean =
@@ -128,6 +169,9 @@ constructor(
             mediaDataManagerLazy.get().removeListener(mediaListener)
             currentPlayingKey = null
             cancelPending()
+            pendingApply = null
+            pendingClear = false
+            clearLiveAccent()
             themeOverlayController.clearMediaAccentColors()
             if (DEBUG) Log.d(TAG, "Album-art accent disabled")
         }
@@ -138,10 +182,10 @@ constructor(
         pendingCancel =
             bgExecutor.executeDelayed(
                 {
-                    val colors = artworkToWallpaperColors(artwork)
-                    if (colors != null) {
-                        themeOverlayController.setMediaAccentColors(colors)
-                    }
+                    // Color extraction is the expensive part; keep it on the bg executor, then hop
+                    // to main to read shade state and mutate our fields consistently.
+                    val colors = artworkToWallpaperColors(artwork) ?: return@executeDelayed
+                    mainExecutor.execute { applyOrDefer(colors) }
                 },
                 DEBOUNCE_MS,
             )
@@ -151,14 +195,77 @@ constructor(
         cancelPending()
         pendingCancel =
             bgExecutor.executeDelayed(
-                { themeOverlayController.clearMediaAccentColors() },
+                { mainExecutor.execute { clearOrDefer() } },
                 DEBOUNCE_MS,
             )
     }
 
+    /** Main thread. Re-theme now if the shade is closed; otherwise defer and drive the live glow. */
+    private fun applyOrDefer(colors: WallpaperColors) {
+        if (shadeOpen) {
+            pendingApply = colors
+            pendingClear = false
+            // Local, RRO-free accent for the QS glow so it cross-fades in place while open. Use the
+            // same seed the overlay pipeline will use on close, so the glow and the eventual
+            // system accent agree on the hue.
+            writeLiveAccent(ColorScheme.getSeedColor(colors))
+        } else {
+            pendingApply = null
+            pendingClear = false
+            clearLiveAccent()
+            themeOverlayController.setMediaAccentColors(colors)
+        }
+    }
+
+    /** Main thread. Clear now if the shade is closed; otherwise defer and drop the live glow. */
+    private fun clearOrDefer() {
+        if (shadeOpen) {
+            pendingApply = null
+            pendingClear = true
+            clearLiveAccent()
+        } else {
+            pendingApply = null
+            pendingClear = false
+            clearLiveAccent()
+            themeOverlayController.clearMediaAccentColors()
+        }
+    }
+
+    private fun writeLiveAccent(argb: Int) {
+        if (argb == lastLiveAccentWritten) return
+        lastLiveAccentWritten = argb
+        Settings.System.putIntForUser(
+            context.contentResolver,
+            LIVE_ACCENT_KEY,
+            argb,
+            userTracker.userId,
+        )
+    }
+
+    private fun clearLiveAccent() = writeLiveAccent(0)
+
     private fun cancelPending() {
         pendingCancel?.run()
         pendingCancel = null
+    }
+
+    /**
+     * True if [token] belongs to a video session (e.g. a video player). Such sessions must be
+     * ignored: driving a system-wide Material-You / RRO theme change while a video Activity is in
+     * the foreground recreates it mid-playback and crashes the player. Video apps declare
+     * [AudioAttributes.CONTENT_TYPE_MOVIE]; music/audio apps declare a different content type (or
+     * none), so only an explicit MOVIE content type is treated as video. Any failure defaults to
+     * "not video" so audio apps (which may not set a content type at all) are never wrongly dropped.
+     */
+    private fun isVideoSession(token: MediaSession.Token?): Boolean {
+        if (token == null) return false
+        return try {
+            val attrs = MediaController(context, token).playbackInfo?.audioAttributes
+            attrs?.contentType == AudioAttributes.CONTENT_TYPE_MOVIE
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to read media session content type", e)
+            false
+        }
     }
 
     /** Extract [WallpaperColors] from album-art [Icon]. Runs on the background executor. */
@@ -188,6 +295,9 @@ constructor(
         // Settings.System key (0 = off default, 1 = on). Toggle from the Settings app or via
         // `adb shell settings put system album_art_accent 1`.
         const val SETTING_KEY = "album_art_accent"
+        // Settings.System key carrying a live ARGB accent for QS while the shade is open (0 = none).
+        // Consumed by QSTileViewImpl (keep in sync with QS_LIVE_ACCENT_SETTING there).
+        const val LIVE_ACCENT_KEY = "qs_live_accent"
         // Debounce window so skipping through tracks doesn't re-theme the whole system repeatedly.
         private const val DEBOUNCE_MS = 800L
     }
