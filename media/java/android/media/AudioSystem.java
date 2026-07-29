@@ -248,6 +248,8 @@ public class AudioSystem
     /** @hide */
     public static final int AUDIO_FORMAT_LDAC           = 0x23000000;
     /** @hide */
+    public static final int AUDIO_FORMAT_LHDC           = 0x28000000;
+    /** @hide */
     public static final int AUDIO_FORMAT_LC3            = 0x2B000000;
     /** @hide */
     public static final int AUDIO_FORMAT_OPUS           = 0x08000000;
@@ -263,6 +265,7 @@ public class AudioSystem
             AUDIO_FORMAT_APTX,
             AUDIO_FORMAT_APTX_HD,
             AUDIO_FORMAT_LDAC,
+            AUDIO_FORMAT_LHDC,
             AUDIO_FORMAT_LC3,
             AUDIO_FORMAT_OPUS,
             AUDIO_FORMAT_OPUS_HI_RES,
@@ -350,6 +353,12 @@ public class AudioSystem
                 return AudioSystem.AUDIO_FORMAT_APTX_HD;
             case BluetoothCodecConfig.SOURCE_CODEC_TYPE_LDAC:
                 return AudioSystem.AUDIO_FORMAT_LDAC;
+            case BluetoothCodecConfig.SOURCE_CODEC_TYPE_LHDCV5:
+                // LHDC is a software (Savitech) codec, not DSP-offloadable. Tagging it
+                // with its real audio format (instead of DEFAULT) lets AudioPolicyManager
+                // route it to the software "bluetooth" HAL module instead of the offload
+                // "primary" (PAL) module.
+                return AudioSystem.AUDIO_FORMAT_LHDC;
             case BluetoothCodecConfig.SOURCE_CODEC_TYPE_LC3:
                 return AudioSystem.AUDIO_FORMAT_LC3;
             case BluetoothCodecConfig.SOURCE_CODEC_TYPE_OPUS:
