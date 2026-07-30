@@ -91,6 +91,22 @@ class BatteryLayersDrawable(
             updateColorProfile(batteryState.hasForegroundContent(), batteryState.color, value)
         }
 
+    /**
+     * SuperVOOC charging-fill override. When non-zero it replaces the [ColorProfile.Active] fill
+     * (the default green charging color) so the status-bar battery reflects the configured
+     * SuperVOOC charging style; 0 clears it. Applied live so an animated (rainbow) override
+     * updates the fill in place without a full state change.
+     */
+    var activeFillOverride: Int = 0
+        set(value) {
+            if (field == value) return
+            field = value
+            if (batteryState.color == ColorProfile.Active) {
+                fill.fillColor = if (value != 0) value else colors.activeFill
+                invalidateSelf()
+            }
+        }
+
     init {
         isAutoMirrored = true
         // Initialize the canvas rects since they are not static
@@ -140,7 +156,8 @@ class BatteryLayersDrawable(
                 fill.fillColor = if (hasFg) colorInfo.fill else colorInfo.fillOnly
             }
             ColorProfile.Active -> {
-                fill.fillColor = colorInfo.activeFill
+                fill.fillColor =
+                    if (activeFillOverride != 0) activeFillOverride else colorInfo.activeFill
             }
             ColorProfile.Warning -> {
                 fill.fillColor = colorInfo.warnFill

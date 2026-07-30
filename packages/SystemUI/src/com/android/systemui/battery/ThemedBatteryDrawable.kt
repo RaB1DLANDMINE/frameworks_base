@@ -167,6 +167,9 @@ open class ThemedBatteryDrawable(private val context: Context, frameColor: Int) 
     fun setChargingColorOverride(color: Int) {
         if (color == chargingColorRuntimeOverride) return
         chargingColorRuntimeOverride = color
+        // draw() paints the fill from the cached levelColor, so recompute it here or the new
+        // override never reaches the icon (this was the "icon doesn't change" bug).
+        levelColor = batteryColorForLevel(batteryLevel)
         invalidateSelf()
     }
     private var textStyleMode: Int = TEXT_STYLE_TWO_TONE_CENTERED

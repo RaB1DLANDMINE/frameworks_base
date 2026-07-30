@@ -831,7 +831,7 @@ public class BatteryMeterView extends LinearLayout implements DarkReceiver {
             getContext().getContentResolver().unregisterContentObserver(mChargingStyleObserver);
         }
         stopRainbow();
-        mDrawable.setChargingColorOverride(0);
+        applyChargingColorOverride(0);
     }
 
     /** Derive charging wattage from the battery intent to flag SuperVOOC-class charging. */
@@ -852,19 +852,32 @@ public class BatteryMeterView extends LinearLayout implements DarkReceiver {
         }
     }
 
+    /**
+     * Route the charging-fill override to whichever battery drawable is currently shown: the
+     * legacy {@link ThemedBatteryDrawable} (via {@link #mDrawable}) and/or the new unified battery
+     * ({@link #mUnifiedBattery}). Only the one attached to the view is visible, but keeping both in
+     * sync means the effect works regardless of the NewStatusBarIcons flag.
+     */
+    private void applyChargingColorOverride(int color) {
+        mDrawable.setChargingColorOverride(color);
+        if (mUnifiedBattery != null) {
+            mUnifiedBattery.setActiveFillOverride(color);
+        }
+    }
+
     /** Apply / clear the SuperVOOC charging-fill color effect for the current state. */
     private void updateChargingColorEffect() {
         boolean active = isCharging() && mIsSuperVooc && isAttachedToWindow();
         if (!active || mChargingIconStyle == CHARGE_STYLE_OFF) {
             stopRainbow();
-            mDrawable.setChargingColorOverride(0);
+            applyChargingColorOverride(0);
             return;
         }
         if (mChargingIconStyle == CHARGE_STYLE_RAINBOW) {
             startRainbow();
         } else { // CHARGE_STYLE_STATIC: follow the system accent so it matches the theme.
             stopRainbow();
-            mDrawable.setChargingColorOverride(
+            applyChargingColorOverride(
                     Utils.getColorAttrDefaultColor(getContext(), android.R.attr.colorAccent));
         }
     }
@@ -877,7 +890,7 @@ public class BatteryMeterView extends LinearLayout implements DarkReceiver {
         mRainbowAnimator.setInterpolator(null); // linear hue sweep
         mRainbowAnimator.addUpdateListener(a -> {
             mRainbowHsv[0] = ((float) a.getAnimatedValue()) * 360f;
-            mDrawable.setChargingColorOverride(Color.HSVToColor(mRainbowHsv));
+            applyChargingColorOverride(Color.HSVToColor(mRainbowHsv));
         });
         mRainbowAnimator.start();
     }
