@@ -104,7 +104,7 @@ constructor(
                 data: MediaData,
                 immediately: Boolean,
             ) {
-                if (data.isPlaying == true && !isVideoSession(data.token)) {
+                if (data.isPlaying == true && !isVideoMedia(data)) {
                     currentPlayingKey = key
                     val art = data.artwork
                     if (art != null) {
@@ -250,14 +250,21 @@ constructor(
     }
 
     /**
-     * True if [token] belongs to a video session (e.g. a video player). Such sessions must be
-     * ignored: driving a system-wide Material-You / RRO theme change while a video Activity is in
-     * the foreground recreates it mid-playback and crashes the player. Video apps declare
-     * [AudioAttributes.CONTENT_TYPE_MOVIE]; music/audio apps declare a different content type (or
-     * none), so only an explicit MOVIE content type is treated as video. Any failure defaults to
-     * "not video" so audio apps (which may not set a content type at all) are never wrongly dropped.
+     * True if [data] is a video session (e.g. a video player) that must be skipped: driving a
+     * system-wide Material-You / RRO theme change triggers a configuration change that recreates a
+     * playing video's surface and kills playback (the app survives; the video dies).
+     *
+     * There is no reliable single signal — video players and music apps frequently use identical
+     * AudioAttributes (both USAGE_MEDIA / CONTENT_TYPE_UNKNOWN, verified on-device with YouTube vs
+     * Tidal). So combine two checks: an explicit MOVIE content type when present, and — the reliable
+     * one — the artwork shape. Album art is square; a video session's art is the landscape video
+     * thumbnail. Either signal marks it as video.
      */
-    private fun isVideoSession(token: MediaSession.Token?): Boolean {
+    private fun isVideoMedia(data: MediaData): Boolean =
+        isVideoContentType(data.token) || isVideoArtwork(data.artwork)
+
+    /** Video only if the session explicitly declares [AudioAttributes.CONTENT_TYPE_MOVIE]. */
+    private fun isVideoContentType(token: MediaSession.Token?): Boolean {
         if (token == null) return false
         return try {
             val attrs = MediaController(context, token).playbackInfo?.audioAttributes
@@ -265,6 +272,39 @@ constructor(
         } catch (e: Exception) {
             Log.w(TAG, "Failed to read media session content type", e)
             false
+        }
+    }
+
+    /**
+     * Video if the artwork is meaningfully non-square. Album covers are square (~1:1); video
+     * thumbnails are landscape (16:9 or 4:3). Failure to measure defaults to "not video" so audio
+     * apps are never wrongly dropped.
+     */
+    private fun isVideoArtwork(artwork: Icon?): Boolean {
+        if (artwork == null) return false
+        val (w, h) = artworkSize(artwork) ?: return false
+        if (w <= 0 || h <= 0) return false
+        val ratio = maxOf(w, h).toFloat() / minOf(w, h).toFloat()
+        return ratio > VIDEO_ASPECT_RATIO
+    }
+
+    /** Pixel dimensions of an artwork [Icon], or null if they can't be determined cheaply. */
+    private fun artworkSize(artwork: Icon): Pair<Int, Int>? {
+        return try {
+            when (artwork.type) {
+                Icon.TYPE_BITMAP,
+                Icon.TYPE_ADAPTIVE_BITMAP -> {
+                    val bitmap = artwork.bitmap
+                    if (bitmap == null || bitmap.isRecycled) null
+                    else Pair(bitmap.width, bitmap.height)
+                }
+                else -> {
+                    val drawable = artwork.loadDrawable(context) ?: return null
+                    Pair(drawable.intrinsicWidth, drawable.intrinsicHeight)
+                }
+            }
+        } catch (e: Exception) {
+            null
         }
     }
 
@@ -300,5 +340,9 @@ constructor(
         const val LIVE_ACCENT_KEY = "qs_live_accent"
         // Debounce window so skipping through tracks doesn't re-theme the whole system repeatedly.
         private const val DEBOUNCE_MS = 800L
+        // Artwork wider/taller than this (long side / short side) is treated as a video thumbnail,
+        // not album art, and skipped. Album covers are ~1:1; video thumbnails are 16:9 (1.78) or
+        // 4:3 (1.33). On-device: Tidal art = 1.00, YouTube = 1.33 — so 1.2 separates them safely.
+        private const val VIDEO_ASPECT_RATIO = 1.2f
     }
 }
