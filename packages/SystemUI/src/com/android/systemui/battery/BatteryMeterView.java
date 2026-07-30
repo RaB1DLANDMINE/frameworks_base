@@ -28,7 +28,6 @@ import android.annotation.IntDef;
 import android.annotation.IntRange;
 import android.annotation.Nullable;
 import android.annotation.SuppressLint;
-import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -118,7 +117,6 @@ public class BatteryMeterView extends LinearLayout implements DarkReceiver {
     private boolean mIsSuperVooc = false;
     private ValueAnimator mRainbowAnimator;
     private final float[] mRainbowHsv = new float[]{0f, 1f, 1f};
-    private BroadcastReceiver mChargePowerReceiver;
     private ContentObserver mChargingStyleObserver;
 
     private BatteryEstimateFetcher mBatteryEstimateFetcher;
@@ -267,6 +265,7 @@ public class BatteryMeterView extends LinearLayout implements DarkReceiver {
         mDrawable.setCharging(isCharging);
         mDrawable.setBatteryLevel(level);
         updatePercentText();
+        updateSuperVooc();
         updateChargingColorEffect();
 
         if (NewStatusBarIcons.isEnabled()) {
@@ -807,26 +806,15 @@ public class BatteryMeterView extends LinearLayout implements DarkReceiver {
         getContext().getContentResolver().registerContentObserver(
                 Settings.System.getUriFor(SUPERVOOC_CHARGING_ICON_STYLE),
                 false, mChargingStyleObserver, UserHandle.USER_ALL);
-        // Sticky ACTION_BATTERY_CHANGED gives us charging current/voltage to derive wattage.
-        if (mChargePowerReceiver == null) {
-            mChargePowerReceiver = new BroadcastReceiver() {
-                @Override
-                public void onReceive(Context context, Intent intent) {
-                    updateSuperVoocFromIntent(intent);
-                }
-            };
-        }
-        Intent sticky = getContext().registerReceiver(mChargePowerReceiver,
-                new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
-        updateSuperVoocFromIntent(sticky);
+        // Seed SuperVOOC state for the current charging conditions; kept fresh from
+        // onBatteryLevelChanged (a reliable callback) rather than a background receiver.
+        updateSuperVooc();
+        updateChargingColorEffect();
     }
 
     @Override
     protected void onDetachedFromWindow() {
         super.onDetachedFromWindow();
-        if (mChargePowerReceiver != null) {
-            getContext().unregisterReceiver(mChargePowerReceiver);
-        }
         if (mChargingStyleObserver != null) {
             getContext().getContentResolver().unregisterContentObserver(mChargingStyleObserver);
         }
@@ -835,8 +823,13 @@ public class BatteryMeterView extends LinearLayout implements DarkReceiver {
     }
 
     /** Derive charging wattage from the battery intent to flag SuperVOOC-class charging. */
-    private void updateSuperVoocFromIntent(@Nullable Intent intent) {
+    private void updateSuperVooc() {
         boolean superVooc = false;
+        // Read the current sticky ACTION_BATTERY_CHANGED synchronously (same source the lock
+        // screen / dumpsys use). Doing this on demand from onBatteryLevelChanged is far more
+        // reliable than a background receiver, which was not delivering the wattage here.
+        Intent intent = getContext().registerReceiver(null,
+                new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
         if (intent != null) {
             // EXTRA_MAX_CHARGING_CURRENT is in microamps, EXTRA_MAX_CHARGING_VOLTAGE in microvolts.
             int currentUa = intent.getIntExtra(BatteryManager.EXTRA_MAX_CHARGING_CURRENT, -1);
@@ -846,10 +839,7 @@ public class BatteryMeterView extends LinearLayout implements DarkReceiver {
                 superVooc = watts > SUPERVOOC_WATT_THRESHOLD;
             }
         }
-        if (superVooc != mIsSuperVooc) {
-            mIsSuperVooc = superVooc;
-            updateChargingColorEffect();
-        }
+        mIsSuperVooc = superVooc;
     }
 
     /**
