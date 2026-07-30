@@ -306,14 +306,16 @@ public class VolumeDialogImpl implements VolumeDialog, Dumpable,
     // background blur and make the row pills translucent so the wallpaper blur shows through
     // (frosted glass instead of an opaque colorSurface panel). Off by default.
     private final boolean mGlassVolume;
-    private static final int GLASS_VOLUME_ROW_ALPHA = 0x59; // ~35% so blur reads through the pill
+    // ~72% dark smoke on the pill so it reads as the same deep frosted glass as the QS tiles
+    // (which sit at GLASS_SMOKE_ALPHA 0.72). A real backdrop blur still frosts behind it.
+    private static final int GLASS_VOLUME_ROW_ALPHA = 0xB8;
     // Stock volume_dialog_background_blur_radius is 0dp (no frost). Glass needs a real radius.
     private static final int GLASS_VOLUME_BLUR_RADIUS_DP = 60;
-    // Smoked-crystal tint over the blur (ARGB): dark cool smoke at ~25%, kept light so the
-    // frosted wallpaper clearly reads through (matching the QS tiles).
-    private static final int GLASS_VOLUME_SMOKE_TINT = 0x400B0F14;
-    // Top-lit sheen stroke on the glass pills (~45% white), matching the QS glass tiles.
-    private static final int GLASS_VOLUME_SHEEN_COLOR = 0x73FFFFFF;
+    // Smoked-crystal tint over the blur (ARGB): dark cool smoke behind the pills, matching the
+    // QS tiles' #0B0F14 hue; a touch heavier now that the pills themselves are darker.
+    private static final int GLASS_VOLUME_SMOKE_TINT = 0x660B0F14;
+    // Top-lit sheen stroke on the glass pills (~35% white), matching the QS glass tile sheen top.
+    private static final int GLASS_VOLUME_SHEEN_COLOR = 0x59FFFFFF;
     private static final int GLASS_VOLUME_SHEEN_WIDTH_DP = 1;
     private Consumer<Boolean> mCrossWindowBlurEnabledListener;
     private BackgroundBlurDrawable mDialogRowsViewBackground;

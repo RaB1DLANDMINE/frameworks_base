@@ -31,6 +31,7 @@ import android.content.res.Configuration
 import android.content.res.Resources.ID_NULL
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.BlendMode
 import android.graphics.Paint
 import android.graphics.PorterDuff
 import android.graphics.RadialGradient
@@ -95,11 +96,20 @@ constructor(
         private const val INVALID = -1
         // Glass UI: Settings.System key + translucency applied to tile fills when enabled.
         private const val GLASS_UI_SETTING = "glass_ui_qs"
-        private const val GLASS_UI_TILE_ALPHA = 0x99 // ~60%, lets the blurred shade show through
+        // Album-art live accent: an ARGB color pushed by AlbumArtAccentController while the shade
+        // is open, so the tile glow can shift color in place WITHOUT an overlay re-theme (which
+        // would reinflate/collapse QS). 0 = none -> fall back to the theme colorActive. The real
+        // system-wide overlay is applied once the shade closes. Keep this key in sync with
+        // AlbumArtAccentController.LIVE_ACCENT_KEY.
+        private const val QS_LIVE_ACCENT_SETTING = "qs_live_accent"
+        private const val GLASS_UI_TILE_ALPHA = 0xDB // ~86%, darker "smoke crystal" fill
+        // How far to pull the tile fill toward black (0 = untouched, 1 = pure black).
+        private const val GLASS_UI_DARKEN = 0.60f
         // Glass UI: an active tile stays frosted (no accent flood) and instead gets an accent
-        // radial "bloom" glowing from behind the icon.
-        private const val GLASS_BLOOM_MAX_ALPHA = 0xC8 // peak alpha at the glow center (~78%)
-        private const val GLASS_BLOOM_RADIUS_FACTOR = 1.75f // glow radius relative to icon size
+        // neon glow around the icon, drawn with a SCREEN blend so it reads as emitted light over
+        // the dark tile rather than a painted blob.
+        private const val GLASS_BLOOM_MAX_ALPHA = 0xE6 // peak glow strength (~90%); visible on any wallpaper
+        private const val GLASS_BLOOM_RADIUS_FACTOR = 2.0f // glow radius relative to icon size
         private const val BACKGROUND_NAME = "background"
         private const val LABEL_NAME = "label"
         private const val SECONDARY_LABEL_NAME = "secondaryLabel"
@@ -197,8 +207,15 @@ constructor(
         }
 
     // Under glass, every tile fill is the same frosted-neutral color (active tiles no longer flood
-    // with accent - they get a bloom instead). Computed from the inactive shade color.
-    private val glassBaseTint = (colorInactive and 0x00FFFFFF) or (GLASS_UI_TILE_ALPHA shl 24)
+    // with accent - they get a bloom instead). Computed from the inactive shade color, then pulled
+    // toward black by GLASS_UI_DARKEN so the panel reads noticeably darker over any wallpaper.
+    private val glassBaseTint = run {
+        val keep = 1f - GLASS_UI_DARKEN
+        val r = ((colorInactive shr 16 and 0xFF) * keep).toInt()
+        val g = ((colorInactive shr 8 and 0xFF) * keep).toInt()
+        val b = ((colorInactive and 0xFF) * keep).toInt()
+        (GLASS_UI_TILE_ALPHA shl 24) or (r shl 16) or (g shl 8) or b
+    }
 
     private fun refreshGlassColors() {
         if (lastState == INVALID) {
@@ -221,11 +238,57 @@ constructor(
         Settings.System.getIntForUser(
             context.contentResolver, GLASS_UI_SETTING, 0, UserHandle.USER_CURRENT) != 0
 
+    // Album-art live accent (see QS_LIVE_ACCENT_SETTING): 0 = none, else an ARGB color the glow
+    // should adopt while the shade is open. Observed live so the glow can cross-fade to the new
+    // album color without any overlay re-theme.
+    private var liveAccent: Int = readLiveAccent()
+    // The color the bloom is currently drawn with. Animated between the theme colorActive and the
+    // live album accent so color changes read as a smooth cross-fade rather than a hard swap.
+    private var bloomColor: Int = if (liveAccent != 0) liveAccent else colorActive
+
+    private fun readLiveAccent(): Int =
+        Settings.System.getIntForUser(
+            context.contentResolver, QS_LIVE_ACCENT_SETTING, 0, UserHandle.USER_CURRENT)
+
+    private val liveAccentObserver =
+        object : ContentObserver(Handler(Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) {
+                val next = readLiveAccent()
+                if (next != liveAccent) {
+                    liveAccent = next
+                    animateBloomColorTo(if (next != 0) next else colorActive)
+                }
+            }
+        }
+
+    private val bloomColorAnimator: ValueAnimator =
+        ValueAnimator().apply {
+            duration = QS_ANIM_LENGTH
+            setEvaluator(ArgbEvaluator())
+            addUpdateListener {
+                bloomColor = it.animatedValue as Int
+                invalidate()
+            }
+        }
+
+    private fun animateBloomColorTo(target: Int) {
+        bloomColorAnimator.cancel()
+        if (bloomColor == target) return
+        if (isShown) {
+            bloomColorAnimator.setIntValues(bloomColor, target)
+            bloomColorAnimator.start()
+        } else {
+            bloomColor = target
+            invalidate()
+        }
+    }
+
     // Glass UI bloom: accent radial glow drawn behind the icon for active tiles.
     private val bloomPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private var bloomShaderCx = Float.NaN
     private var bloomShaderCy = Float.NaN
     private var bloomShaderRadius = -1f
+    private var bloomShaderColor = 0 // color the cached shader was built with
     private var bloomAlpha = 0f // 0..1 current glow strength
     private var bloomActive = false // whether the current tile state is active
     private val bloomAnimator: ValueAnimator =
@@ -257,15 +320,22 @@ constructor(
             val cy = icon.top + icon.height / 2f
             val radius = icon.width * GLASS_BLOOM_RADIUS_FACTOR
             if (radius > 0f &&
-                (cx != bloomShaderCx || cy != bloomShaderCy || radius != bloomShaderRadius)) {
-                val center = (colorActive and 0x00FFFFFF) or (0xFF shl 24)
+                (cx != bloomShaderCx || cy != bloomShaderCy || radius != bloomShaderRadius ||
+                    bloomColor != bloomShaderColor)) {
+                val rgb = bloomColor and 0x00FFFFFF
+                // Soft neon falloff: bright core -> gentle mid -> transparent edge, so it reads as
+                // a luminous halo rather than a hard accent disc.
                 bloomPaint.shader = RadialGradient(
                     cx, cy, radius,
-                    intArrayOf(center, colorActive and 0x00FFFFFF),
-                    floatArrayOf(0f, 1f), Shader.TileMode.CLAMP)
+                    intArrayOf(rgb or (0xFF shl 24), rgb or (0x66 shl 24), rgb),
+                    floatArrayOf(0f, 0.45f, 1f), Shader.TileMode.CLAMP)
+                // Draw the accent as an over-composited colored halo (not SCREEN): SCREEN washes
+                // out to nothing over a bright/warm wallpaper, so the glow paints directly instead.
+                bloomPaint.blendMode = null
                 bloomShaderCx = cx
                 bloomShaderCy = cy
                 bloomShaderRadius = radius
+                bloomShaderColor = bloomColor
             }
             bloomPaint.alpha = (GLASS_BLOOM_MAX_ALPHA * bloomAlpha).toInt()
             canvas.drawCircle(cx, cy, radius, bloomPaint)
@@ -940,15 +1010,26 @@ constructor(
         context.contentResolver.registerContentObserver(
             Settings.System.getUriFor(GLASS_UI_SETTING), false, glassUiObserver,
             UserHandle.USER_ALL)
+        context.contentResolver.registerContentObserver(
+            Settings.System.getUriFor(QS_LIVE_ACCENT_SETTING), false, liveAccentObserver,
+            UserHandle.USER_ALL)
         val enabled = readGlassUi()
         if (enabled != glassUiEnabled) {
             glassUiEnabled = enabled
             refreshGlassColors()
         }
+        // Sync the glow to whatever accent is live now (e.g. tile re-attached mid-playback).
+        val accent = readLiveAccent()
+        if (accent != liveAccent) {
+            liveAccent = accent
+            animateBloomColorTo(if (accent != 0) accent else colorActive)
+        }
     }
 
     override fun onDetachedFromWindow() {
         context.contentResolver.unregisterContentObserver(glassUiObserver)
+        context.contentResolver.unregisterContentObserver(liveAccentObserver)
+        bloomColorAnimator.cancel()
         super.onDetachedFromWindow()
     }
 

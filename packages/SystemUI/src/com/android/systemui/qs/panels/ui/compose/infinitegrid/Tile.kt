@@ -414,6 +414,7 @@ fun ContentScope.Tile(
                             SmallTileContent(
                                 iconProvider = iconProvider,
                                 color = colors.icon,
+                                iconShadow = colors.iconShadow,
                                 modifier = Modifier.bounceScale {
                                     contentBounceable.iconBounceScale
                                 },
@@ -449,6 +450,7 @@ fun ContentScope.Tile(
                         SmallTileContent(
                             iconProvider = iconProvider,
                             color = colors.icon,
+                            iconShadow = colors.iconShadow,
                             modifier =
                                 Modifier.align(Alignment.Center).bounceScale {
                                     contentBounceable.iconBounceScale
@@ -657,6 +659,8 @@ data class TileColors(
     val iconBackgroundGradient: Brush? = null,
     val tileBackgroundGradient: Brush? = null,
     val outline: Color,
+    // Glass UI only: draw a subtle drop shadow behind the tile icon glyph for legibility on frost.
+    val iconShadow: Boolean = false,
 )
 
 @Composable
@@ -1019,12 +1023,12 @@ private class GlassActiveBrush(
 // Smoked-glass fill: dark cool tint at moderate alpha, so the shade's cross-window blur reads
 // through dimmed and pure-white content stays legible on top of any wallpaper.
 private val GLASS_SMOKE = Color(0xFF0B0F14)
-private const val GLASS_SMOKE_ALPHA = 0.40f
+private const val GLASS_SMOKE_ALPHA = 0.68f
 // How far the idle tile smoke is tinted toward the Monet primary (0 = neutral dark, 1 = full
 // accent). ~0.24 gives a bold accent hue that suits the wallpaper without going neon.
 private const val GLASS_SMOKE_TINT_FRACTION = 0.24f
 // Unavailable tiles are the same glass, just fainter, with dimmed content.
-private const val GLASS_SMOKE_ALPHA_UNAVAILABLE = 0.28f
+private const val GLASS_SMOKE_ALPHA_UNAVAILABLE = 0.52f
 // Peak bloom alpha at the glow center (matches the legacy 0xC8 bloom).
 private const val GLASS_BLOOM_MAX_ALPHA = 0.78f
 // Top-edge light catch.
@@ -1423,6 +1427,7 @@ private object TileDefaults {
                         if (circleMode) null
                         else GlassActiveBrush(MaterialTheme.colorScheme.primary, iconOnly),
                     outline = MaterialTheme.colorScheme.primary,
+                    iconShadow = true,
                 )
 
             STATE_INACTIVE ->
@@ -1435,6 +1440,7 @@ private object TileDefaults {
                     iconBackgroundGradient = null,
                     tileBackgroundGradient = if (circleMode) null else GlassSheenBrush(),
                     outline = onGlassDim,
+                    iconShadow = true,
                 )
 
             else ->
@@ -1447,6 +1453,7 @@ private object TileDefaults {
                     iconBackgroundGradient = null,
                     tileBackgroundGradient = if (circleMode) null else GlassSheenBrush(),
                     outline = Color.White.copy(alpha = 0.45f),
+                    iconShadow = true,
                 )
         }
     }

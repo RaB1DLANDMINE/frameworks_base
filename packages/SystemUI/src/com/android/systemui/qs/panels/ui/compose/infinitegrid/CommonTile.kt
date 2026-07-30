@@ -39,6 +39,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -58,6 +59,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.BlurredEdgeTreatment
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
@@ -204,6 +207,7 @@ fun ClassicTileContent(
                 iconProvider = iconProvider,
                 color = if (!isNoBackground) colors.icon else animatedOutlineColor,
                 size = { iconSize },
+                iconShadow = colors.iconShadow,
                 modifier = Modifier.align(Alignment.Center),
             )
         }
@@ -293,6 +297,7 @@ fun LargeTileContent(
                 iconProvider = iconProvider,
                 color = colors.icon,
                 size = { CommonTileDefaults.LargeTileIconSize },
+                iconShadow = colors.iconShadow,
                 modifier = Modifier.align(Alignment.Center),
             )
         }
@@ -366,11 +371,19 @@ fun SmallTileContent(
     modifier: Modifier = Modifier,
     size: () -> Dp = { CommonTileDefaults.IconSize },
     animateToEnd: Boolean = false,
+    iconShadow: Boolean = false,
 ) {
     val context = LocalContext.current
     val icon = iconProvider(context)
     val animatedColor by animateColorAsState(color, label = "QSTileIconColor")
-    val iconModifier = modifier.size({ size().roundToPx() }, { size().roundToPx() })
+    val sizeModifier = Modifier.size({ size().roundToPx() }, { size().roundToPx() })
+    // Very slight drop shadow so glass-mode white icons lift off the frosted tile: the same glyph
+    // drawn once underneath, tinted translucent black, nudged down and softly blurred.
+    val shadowTint = Color.Black.copy(alpha = GLASS_ICON_SHADOW_ALPHA)
+    val shadowModifier =
+        Modifier.offset(y = GLASS_ICON_SHADOW_OFFSET)
+            .blur(GLASS_ICON_SHADOW_BLUR, BlurredEdgeTreatment.Unbounded)
+            .then(sizeModifier)
     val loadedDrawable =
         remember(icon, context) {
             when (icon) {
@@ -415,26 +428,56 @@ fun SmallTileContent(
                 }
             }
 
-        if (iconRefresh2025()) {
-            NonClippedImage(
-                painter = painter,
-                contentDescription = icon.contentDescription?.load(),
-                colorFilter = ColorFilter.tint(color = animatedColor),
-                modifier = iconModifier,
-                contentScale = ContentScale.Crop,
-            )
-        } else {
-            Image(
-                painter = painter,
-                contentDescription = icon.contentDescription?.load(),
-                colorFilter = ColorFilter.tint(color = animatedColor),
-                modifier = iconModifier,
-            )
+        Box(modifier = modifier, contentAlignment = Alignment.Center) {
+            if (iconShadow) {
+                if (iconRefresh2025()) {
+                    NonClippedImage(
+                        painter = painter,
+                        contentDescription = null,
+                        colorFilter = ColorFilter.tint(color = shadowTint),
+                        modifier = shadowModifier,
+                        contentScale = ContentScale.Crop,
+                    )
+                } else {
+                    Image(
+                        painter = painter,
+                        contentDescription = null,
+                        colorFilter = ColorFilter.tint(color = shadowTint),
+                        modifier = shadowModifier,
+                    )
+                }
+            }
+            if (iconRefresh2025()) {
+                NonClippedImage(
+                    painter = painter,
+                    contentDescription = icon.contentDescription?.load(),
+                    colorFilter = ColorFilter.tint(color = animatedColor),
+                    modifier = sizeModifier,
+                    contentScale = ContentScale.Crop,
+                )
+            } else {
+                Image(
+                    painter = painter,
+                    contentDescription = icon.contentDescription?.load(),
+                    colorFilter = ColorFilter.tint(color = animatedColor),
+                    modifier = sizeModifier,
+                )
+            }
         }
     } else {
-        Icon(icon = icon, tint = animatedColor, modifier = iconModifier)
+        Box(modifier = modifier, contentAlignment = Alignment.Center) {
+            if (iconShadow) {
+                Icon(icon = icon, tint = shadowTint, modifier = shadowModifier)
+            }
+            Icon(icon = icon, tint = animatedColor, modifier = sizeModifier)
+        }
     }
 }
+
+// Very slight glass-mode icon drop shadow. Kept subtle so it reads as depth, not a hard offset.
+private const val GLASS_ICON_SHADOW_ALPHA = 0.32f
+private val GLASS_ICON_SHADOW_OFFSET = 1.dp
+private val GLASS_ICON_SHADOW_BLUR = 3.dp
 
 @Composable
 private fun TileLabel(
