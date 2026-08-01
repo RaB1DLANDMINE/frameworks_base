@@ -490,7 +490,12 @@ public class NotificationShadeWindowControllerImpl implements NotificationShadeW
             if (shouldUseKeyguardUserOrientation()) {
                 mLpChanged.screenOrientation = ActivityInfo.SCREEN_ORIENTATION_USER;
             } else {
-                mLpChanged.screenOrientation = ActivityInfo.SCREEN_ORIENTATION_NOSENSOR;
+                // Force portrait rather than NOSENSOR. NOSENSOR only stops the sensor from
+                // rotating the window — it keeps whatever rotation the display is currently
+                // locked to, so if the user forced landscape (e.g. via the rotate-suggestion
+                // popup with auto-rotate off) the lock screen would come up landscape and stick.
+                // PORTRAIT explicitly overrides that locked rotation, honouring "Always portrait".
+                mLpChanged.screenOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT;
             }
         } else if (state.glanceableHubOrientationAware || dreamShowingAndRotationAllowed) {
             mLpChanged.screenOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR;
