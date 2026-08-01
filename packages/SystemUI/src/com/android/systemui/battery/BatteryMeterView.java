@@ -265,7 +265,6 @@ public class BatteryMeterView extends LinearLayout implements DarkReceiver {
         mDrawable.setCharging(isCharging);
         mDrawable.setBatteryLevel(level);
         updatePercentText();
-        updateSuperVooc();
         updateChargingColorEffect();
 
         if (NewStatusBarIcons.isEnabled()) {
@@ -806,9 +805,8 @@ public class BatteryMeterView extends LinearLayout implements DarkReceiver {
         getContext().getContentResolver().registerContentObserver(
                 Settings.System.getUriFor(SUPERVOOC_CHARGING_ICON_STYLE),
                 false, mChargingStyleObserver, UserHandle.USER_ALL);
-        // Seed SuperVOOC state for the current charging conditions; kept fresh from
-        // onBatteryLevelChanged (a reliable callback) rather than a background receiver.
-        updateSuperVooc();
+        // SuperVOOC state is seeded by BatteryMeterViewController via setChargingWattage()
+        // right after it adds the battery callback; just refresh the effect for the current state.
         updateChargingColorEffect();
     }
 
@@ -822,24 +820,16 @@ public class BatteryMeterView extends LinearLayout implements DarkReceiver {
         applyChargingColorOverride(0);
     }
 
-    /** Derive charging wattage from the battery intent to flag SuperVOOC-class charging. */
-    private void updateSuperVooc() {
-        boolean superVooc = false;
-        // Read the current sticky ACTION_BATTERY_CHANGED synchronously (same source the lock
-        // screen / dumpsys use). Doing this on demand from onBatteryLevelChanged is far more
-        // reliable than a background receiver, which was not delivering the wattage here.
-        Intent intent = getContext().registerReceiver(null,
-                new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
-        if (intent != null) {
-            // EXTRA_MAX_CHARGING_CURRENT is in microamps, EXTRA_MAX_CHARGING_VOLTAGE in microvolts.
-            int currentUa = intent.getIntExtra(BatteryManager.EXTRA_MAX_CHARGING_CURRENT, -1);
-            int voltageUv = intent.getIntExtra(BatteryManager.EXTRA_MAX_CHARGING_VOLTAGE, -1);
-            if (currentUa > 0 && voltageUv > 0) {
-                double watts = (currentUa / 1_000_000d) * (voltageUv / 1_000_000d);
-                superVooc = watts > SUPERVOOC_WATT_THRESHOLD;
-            }
-        }
-        mIsSuperVooc = superVooc;
+    /**
+     * SuperVOOC-class charging flag. The wattage is pushed in by {@link BatteryMeterViewController}
+     * from {@link com.android.systemui.statusbar.policy.BatteryController#getMaxChargingWattage()},
+     * which derives it from the battery broadcast. We do NOT read the sticky ACTION_BATTERY_CHANGED
+     * here: the OEM excludes SystemUI from that broadcast, so a direct sticky read returns nothing
+     * (which is why this effect never triggered before).
+     */
+    public void setChargingWattage(int watts) {
+        mIsSuperVooc = watts > SUPERVOOC_WATT_THRESHOLD;
+        updateChargingColorEffect();
     }
 
     /**

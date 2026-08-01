@@ -17,6 +17,11 @@
 package com.android.systemui.statusbar.pipeline.battery.ui.composable
 
 import android.graphics.Rect
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
@@ -188,6 +193,15 @@ fun UnifiedBattery(
         }
     }
 
+    // SuperVOOC charging-icon effect: override the green charging fill with a static accent
+    // (style 2) or an animated rainbow (style 1). Non-null only while SuperVOOC-class charging.
+    val chargingFillOverride: Color? =
+        when (viewModel.superVoocChargingStyle) {
+            2 -> MaterialTheme.colorScheme.primary
+            1 -> animatedRainbowColor()
+            else -> null
+        }
+
     BatteryLayout(
         attribution = viewModel.attribution,
         iconStyleProvider = { viewModel.batteryIconStyle },
@@ -196,6 +210,7 @@ fun UnifiedBattery(
         isFullProvider = { viewModel.isFull },
         glyphsProvider = { viewModel.glyphList },
         colorsProvider = colorProvider,
+        chargingFillOverride = chargingFillOverride,
         modifier =
             modifier.sysuiResTag(BatteryViewModel.TEST_TAG).onLayoutRectChanged {
                 relativeLayoutBounds ->
@@ -204,6 +219,24 @@ fun UnifiedBattery(
             },
         contentDescription = viewModel.contentDescription.load() ?: "",
     )
+}
+
+/**
+ * A fully-saturated color whose hue continuously sweeps 0..360° over 4 seconds, producing a rainbow
+ * cycle. Only composed while the SuperVOOC rainbow style is active, so it costs nothing when idle.
+ */
+@Composable
+private fun animatedRainbowColor(): Color {
+    val transition = rememberInfiniteTransition(label = "supervoocRainbow")
+    val hue by
+        transition.animateFloat(
+            initialValue = 0f,
+            targetValue = 360f,
+            animationSpec =
+                infiniteRepeatable(animation = tween(durationMillis = 4000, easing = LinearEasing)),
+            label = "supervoocHue",
+        )
+    return Color.hsv(hue, 1f, 1f)
 }
 
 @Composable
@@ -217,6 +250,7 @@ fun BatteryLayout(
     colorsProvider: () -> BatteryColors,
     modifier: Modifier,
     contentDescription: String = "",
+    chargingFillOverride: Color? = null,
 ) {
     Layout(
         content = {
@@ -242,6 +276,7 @@ fun BatteryLayout(
                     colorsProvider = colorsProvider,
                     modifier = Modifier.layoutId(BatteryMeasurePolicy.LayoutId.FrameCircle),
                     contentDescription = contentDescription,
+                    chargingFillOverride = chargingFillOverride,
                 )
             } else if (iconStyle == BatteryRepository.ICON_STYLE_TEXT) {
                 // Empty on purpose
@@ -254,6 +289,7 @@ fun BatteryLayout(
                     colorsProvider = colorsProvider,
                     modifier = Modifier.layoutId(BatteryMeasurePolicy.LayoutId.Frame),
                     contentDescription = contentDescription,
+                    chargingFillOverride = chargingFillOverride,
                 )
                 if (attribution != null) {
                     BatteryAttribution(
@@ -446,6 +482,7 @@ fun CircleBatteryBody(
     colorsProvider: () -> BatteryColors,
     modifier: Modifier = Modifier,
     contentDescription: String = "",
+    chargingFillOverride: Color? = null,
 ) {
     val colorError = MaterialTheme.colorScheme.error
     val textMeasurer = rememberTextMeasurer()
@@ -467,7 +504,7 @@ fun CircleBatteryBody(
         if (level != null && level > 0) {
             drawArc(
                 if (attr is BatteryGlyph.Bolt || attr is BatteryGlyph.Defend) {
-                    BatteryColors.DarkTheme.Charging.fill
+                    chargingFillOverride ?: BatteryColors.DarkTheme.Charging.fill
                 } else if (attr is BatteryGlyph.Plus) {
                     BatteryColors.DarkTheme.PowerSave.fill
                 } else if (level <= 20) {
@@ -555,6 +592,7 @@ fun BatteryBody(
     colorsProvider: () -> BatteryColors,
     modifier: Modifier = Modifier,
     contentDescription: String = "",
+    chargingFillOverride: Color? = null,
 ) {
     Canvas(modifier = modifier, contentDescription = contentDescription) {
         val rtl = layoutDirection == LayoutDirection.Rtl
@@ -595,7 +633,7 @@ fun BatteryBody(
                     ) {
                         // 3. Draw the rounded rect fill fully, it'll be clipped above
                         drawRoundRect(
-                            color = colors.fill,
+                            color = chargingFillOverride ?: colors.fill,
                             topLeft = Offset.Zero,
                             size =
                                 Size(

@@ -94,6 +94,7 @@ public class BatteryControllerImpl extends BroadcastReceiver implements BatteryC
     protected boolean mCharging;
     private boolean mStateUnknown = false;
     private boolean mCharged;
+    private int mMaxChargingWattage = -1;
     protected boolean mPowerSave;
     private boolean mAodPowerSave;
     private boolean mWirelessCharging;
@@ -263,6 +264,19 @@ public class BatteryControllerImpl extends BroadcastReceiver implements BatteryC
                     BatteryManager.BATTERY_STATUS_UNKNOWN);
             mCharged = status == BatteryManager.BATTERY_STATUS_FULL;
             mCharging = mCharged || status == BatteryManager.BATTERY_STATUS_CHARGING;
+            // Derive charging wattage from the OEM charger extras (microamps x microvolts).
+            // Kept here because SystemUI is excluded from the generic sticky battery broadcast,
+            // so only receivers wired through the BroadcastDispatcher (like this one) see them.
+            int maxChargingMicroAmp =
+                    intent.getIntExtra(BatteryManager.EXTRA_MAX_CHARGING_CURRENT, -1);
+            int maxChargingMicroVolt =
+                    intent.getIntExtra(BatteryManager.EXTRA_MAX_CHARGING_VOLTAGE, -1);
+            if (mCharging && maxChargingMicroAmp > 0 && maxChargingMicroVolt > 0) {
+                mMaxChargingWattage = (int) ((maxChargingMicroAmp / 1_000_000d)
+                        * (maxChargingMicroVolt / 1_000_000d));
+            } else {
+                mMaxChargingWattage = -1;
+            }
             if (mWirelessCharging != (mCharging
                     && intent.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0)
                     == BatteryManager.BATTERY_PLUGGED_WIRELESS)) {
@@ -358,6 +372,11 @@ public class BatteryControllerImpl extends BroadcastReceiver implements BatteryC
     @Override
     public boolean isWirelessCharging() {
         return mWirelessCharging;
+    }
+
+    @Override
+    public int getMaxChargingWattage() {
+        return mMaxChargingWattage;
     }
 
     @Override

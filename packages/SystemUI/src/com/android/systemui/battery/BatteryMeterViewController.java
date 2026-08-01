@@ -87,6 +87,7 @@ public class BatteryMeterViewController extends ViewController<BatteryMeterView>
                 @Override
                 public void onBatteryLevelChanged(int level, boolean pluggedIn, boolean charging) {
                     mView.onBatteryLevelChanged(level, pluggedIn);
+                    mView.setChargingWattage(mBatteryController.getMaxChargingWattage());
                 }
 
                 @Override
@@ -165,6 +166,8 @@ public class BatteryMeterViewController extends ViewController<BatteryMeterView>
         mConfigurationController.addCallback(mConfigurationListener);
         subscribeForTunerUpdates();
         mBatteryController.addCallback(mBatteryStateChangeCallback);
+        // Seed SuperVOOC charging state immediately on attach (addCallback may not replay).
+        mView.setChargingWattage(mBatteryController.getMaxChargingWattage());
 
         registerShowBatteryPercentObserver(mUserTracker.getUserId());
         registerGlobalBatteryUpdateObserver();

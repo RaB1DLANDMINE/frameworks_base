@@ -16,11 +16,16 @@
 
 package com.android.systemui.statusbar.pipeline.battery.data.repository
 
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.database.ContentObserver
+import android.os.BatteryManager
 import android.os.Handler
 import android.os.Looper
 import android.os.UserHandle
+import android.provider.Settings
 import com.android.systemui.Flags
 import com.android.systemui.res.R
 import com.android.systemui.dagger.SysUISingleton
@@ -46,6 +51,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
@@ -93,6 +99,15 @@ interface BatteryRepository {
      */
     val showBatteryPercentMode: StateFlow<Int>
 
+    /**
+     * Resolved SuperVOOC charging-icon effect style. Yields the user's chosen style
+     * ([Settings.System] key `supervooc_charging_icon_style`: 0 = off, 1 = rainbow, 2 = static
+     * accent) ONLY while the device is actually SuperVOOC-class charging (charge power over
+     * [SUPER_VOOC_WATTS_THRESHOLD]); otherwise yields 0. The status-bar battery composables use
+     * this to override the green charging fill.
+     */
+    val superVoocChargingStyle: StateFlow<Int>
+
     companion object {
         const val ICON_STYLE_DEFAULT = 0
         const val ICON_STYLE_CIRCLE = 1
@@ -102,6 +117,14 @@ interface BatteryRepository {
         const val SHOW_PERCENT_HIDDEN = 0
         const val SHOW_PERCENT_INSIDE = 1
         const val SHOW_PERCENT_NEXT_TO = 2
+
+        /** [Settings.System] key for the SuperVOOC charging-icon effect style (0/1/2). */
+        const val SETTING_SUPERVOOC_ICON_STYLE = "supervooc_charging_icon_style"
+        /** Charge power (watts) above which we treat charging as SuperVOOC-class. */
+        const val SUPER_VOOC_WATTS_THRESHOLD = 45.0
+        const val SUPERVOOC_STYLE_OFF = 0
+        const val SUPERVOOC_STYLE_RAINBOW = 1
+        const val SUPERVOOC_STYLE_STATIC = 2
     }
 
     /**
@@ -397,6 +420,89 @@ constructor(
                 scope = scope,
                 started = SharingStarted.Lazily,
                 initialValue = BatteryRepository.SHOW_PERCENT_INSIDE,
+            )
+
+    /** True while the charger reports SuperVOOC-class power (see [SUPER_VOOC_WATTS_THRESHOLD]). */
+    private val superVoocChargingFlow: Flow<Boolean> =
+        callbackFlow {
+                fun isSuperVooc(intent: Intent?): Boolean {
+                    if (intent == null) return false
+                    val plugged = intent.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) != 0
+                    if (!plugged) return false
+                    // Extras are in micro-amperes / micro-volts.
+                    val currentUa =
+                        intent.getIntExtra(BatteryManager.EXTRA_MAX_CHARGING_CURRENT, -1)
+                    val voltageUv =
+                        intent.getIntExtra(BatteryManager.EXTRA_MAX_CHARGING_VOLTAGE, -1)
+                    if (currentUa <= 0 || voltageUv <= 0) return false
+                    val watts = (currentUa / 1_000_000.0) * (voltageUv / 1_000_000.0)
+                    return watts > BatteryRepository.SUPER_VOOC_WATTS_THRESHOLD
+                }
+
+                val receiver =
+                    object : BroadcastReceiver() {
+                        override fun onReceive(c: Context, intent: Intent) {
+                            trySend(isSuperVooc(intent))
+                        }
+                    }
+                val filter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
+                // registerReceiver returns the current sticky intent, seeding the initial value.
+                val sticky = context.registerReceiver(receiver, filter)
+                trySend(isSuperVooc(sticky))
+
+                awaitClose { context.unregisterReceiver(receiver) }
+            }
+            .flowOn(bgDispatcher)
+            .distinctUntilChanged()
+
+    /** The user's chosen SuperVOOC icon style (0/1/2), independent of charging state. */
+    private val superVoocStyleSettingFlow: Flow<Int> =
+        callbackFlow {
+                val resolver = context.contentResolver
+
+                fun readStyle(): Int =
+                    Settings.System.getIntForUser(
+                        resolver,
+                        BatteryRepository.SETTING_SUPERVOOC_ICON_STYLE,
+                        BatteryRepository.SUPERVOOC_STYLE_RAINBOW,
+                        UserHandle.USER_CURRENT,
+                    )
+
+                val observer =
+                    object : ContentObserver(Handler(Looper.getMainLooper())) {
+                        override fun onChange(selfChange: Boolean) {
+                            trySend(readStyle())
+                        }
+                    }
+
+                resolver.registerContentObserver(
+                    Settings.System.getUriFor(BatteryRepository.SETTING_SUPERVOOC_ICON_STYLE),
+                    /* notifyForDescendants = */ false,
+                    observer,
+                    UserHandle.USER_ALL,
+                )
+
+                trySend(readStyle())
+
+                awaitClose { resolver.unregisterContentObserver(observer) }
+            }
+            .flowOn(bgDispatcher)
+            .distinctUntilChanged()
+
+    override val superVoocChargingStyle: StateFlow<Int> =
+        combine(superVoocChargingFlow, superVoocStyleSettingFlow) { superVooc, style ->
+                if (superVooc && style != BatteryRepository.SUPERVOOC_STYLE_OFF) {
+                    style
+                } else {
+                    BatteryRepository.SUPERVOOC_STYLE_OFF
+                }
+            }
+            .distinctUntilChanged()
+            .flowOn(bgDispatcher)
+            .stateIn(
+                scope = scope,
+                started = SharingStarted.Lazily,
+                initialValue = BatteryRepository.SUPERVOOC_STYLE_OFF,
             )
 
     /** Get and re-fetch the estimate every 2 minutes while active */

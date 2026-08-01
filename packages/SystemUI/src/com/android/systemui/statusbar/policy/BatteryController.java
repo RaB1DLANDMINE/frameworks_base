@@ -102,6 +102,15 @@ public interface BatteryController extends DemoMode,
     default boolean isWirelessCharging() { return false; }
 
     /**
+     * Max charging power in watts, derived from the battery broadcast's max-charging
+     * current/voltage extras (the SuperVOOC/OEM charger reports these). Sourced here because
+     * the OEM excludes SystemUI from the generic ACTION_BATTERY_CHANGED sticky, so a View
+     * reading the sticky directly gets nothing; this controller receives it via the
+     * BroadcastDispatcher instead. Returns -1 when unknown / not charging.
+     */
+    default int getMaxChargingWattage() { return -1; }
+
+    /**
      * Returns {@code true} if reverse is supported.
      */
     default boolean isReverseSupported() { return false; }

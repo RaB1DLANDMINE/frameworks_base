@@ -247,6 +247,18 @@ sealed class BatteryViewModel(
             source = interactor.batteryIconStyle,
         )
 
+    /**
+     * The active SuperVOOC charging-icon effect style (0 = off/not SuperVOOC, 1 = rainbow,
+     * 2 = static accent). Non-zero only while SuperVOOC-class charging. Drives the charging-fill
+     * color override in the battery composables.
+     */
+    val superVoocChargingStyle: Int by
+        hydrator.hydratedStateOf(
+            traceName = "superVoocChargingStyle",
+            initialValue = BatteryRepository.SUPERVOOC_STYLE_OFF,
+            source = interactor.superVoocChargingStyle,
+        )
+
     /** For use in the shade, where we might need to show an estimate */
     val batteryTimeRemainingEstimate: String? by
         hydrator.hydratedStateOf(
