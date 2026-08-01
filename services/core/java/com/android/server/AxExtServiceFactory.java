@@ -87,6 +87,7 @@ public class AxExtServiceFactory {
     public static void systemReady() {
         AxSandboxService.systemReady();
         GameSpaceService.systemReady();
+        com.android.server.wm.BypassChargeController.systemReady();
         getSpoofManager().systemReady();
     }
     
